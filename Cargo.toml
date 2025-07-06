@@ -1,0 +1,12 @@
+[package]
+name = "trss-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-sqlite = "0.5.2"
+ratatui = { version = "0.29.0", features = ["unstable-widget-ref"] }
+reqwest = "0.12.20"
+rss = "2.0.12"
+strum = { version = "0.27.1", features = ["derive"] }
+tokio = { version = "1.45.1", features = ["tokio-macros", "macros", "rt", "net", "rt-multi-thread"] }
