@@ -1,21 +1,27 @@
 use crate::{
-    models::db::Database,
-    screens::{Screen, home::Home, view_feed::ViewFeed},
+    models::{db::Database, feed_item::FeedItem},
+    screens::{Screen, home::Home, test_html::TestHtml, view_feed::ViewFeed},
 };
 use ratatui::DefaultTerminal;
 use std::collections::HashMap;
 
 use crate::event::EventHandler;
 
+#[derive(Clone)]
+pub struct AppState {
+    pub selected_feed_item: Option<FeedItem>,
+}
+
 pub enum AppEvent {
     Quit,
-    ChangeScreen(Screens),
+    ChangeScreen(Screens, AppState),
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub enum Screens {
     Home,
     ViewFeed,
+    TestHtml,
 }
 
 pub struct App {
@@ -23,6 +29,7 @@ pub struct App {
     should_quit: bool,
     screens: HashMap<Screens, Box<dyn Screen>>,
     database: Database,
+    pub state: AppState,
 }
 
 impl App {
@@ -32,18 +39,22 @@ impl App {
             eprintln!("Failed to initialize database: {}", err);
             std::process::exit(1);
         }
-        eprintln!("Database initialized successfully");
         let database = database.unwrap();
 
         let mut screens: HashMap<Screens, Box<dyn Screen>> = HashMap::new();
         screens.insert(Screens::Home, Box::new(Home::new(database.clone()).await));
         screens.insert(Screens::ViewFeed, Box::new(ViewFeed::new(database.clone())));
+        screens.insert(Screens::TestHtml, Box::new(TestHtml::new()));
 
         App {
             current_screen: Screens::Home,
+            // current_screen: Screens::TestHtml,
             should_quit: false,
             screens,
             database,
+            state: AppState {
+                selected_feed_item: None,
+            },
         }
     }
 
@@ -52,29 +63,17 @@ impl App {
 
         while !self.should_quit {
             let current_screen = self.current_screen.clone();
-            // let mut screen: Option<Box<dyn Screen>> = match self.current_screen {
-            //     Screens::Home => Some(Box::new(Home::new().await)),
-            //     Screens::ViewFeed => Some(Box::new(ViewFeed::new())),
-            // };
             terminal.draw(|frame| {
                 if let Some(screen) = self.screens.get(&current_screen) {
                     screen.render(frame, frame.area(), &self);
                 }
-                // screen.as_ref().unwrap().render(frame, frame.area(), &self);
-                // if screen.is_some() {
-                //     screen.as_ref().unwrap().render(frame, frame.area(), &self);
-                // } else {
-                //     let greeting = Paragraph::new("Hello Ratatui! {} (press 'q' to quit)")
-                //         .white()
-                //         .on_blue();
-                //     frame.render_widget(greeting, frame.area());
-                // }
             })?;
             if let Some(screen) = self.screens.get_mut(&self.current_screen) {
-                if let Some(app_event) = screen.handle_input(&events) {
+                if let Some(app_event) = screen.handle_input(&events, &self.state) {
                     match app_event {
                         AppEvent::Quit => self.should_quit = true,
-                        AppEvent::ChangeScreen(new_screen) => {
+                        AppEvent::ChangeScreen(new_screen, new_state) => {
+                            self.state = new_state;
                             self.set_screen(new_screen);
                         }
                     }
@@ -87,5 +86,8 @@ impl App {
 
     pub fn set_screen(&mut self, screen: Screens) {
         self.current_screen = screen;
+        if let Some(screen) = self.screens.get_mut(&self.current_screen) {
+            screen.reset();
+        }
     }
 }

@@ -1,3 +1,4 @@
+use ratatui::crossterm::event::KeyModifiers;
 use ratatui::prelude::Constraint;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEventKind},
@@ -8,30 +9,35 @@ use ratatui::{
 };
 
 use std::collections::HashMap;
+use std::sync::mpsc::{self, channel};
 
-use crate::app::AppEvent;
+use crate::app::{AppEvent, AppState, Screens};
+use crate::event::EventHandler;
 use crate::models::db::Database;
-use crate::models::feed::Feed;
+use crate::models::feed::{Feed, spawn_update_feeds};
 use crate::models::feed_item::FeedItem;
 use crate::widgets::WidgetExt;
 use crate::widgets::feed_list::FeedList;
 use crate::{event::Event, screens::Screen, widgets::sidebar::Sidebar};
+
+const SIDEBAR: &str = "sidebar";
+const FEED_LIST: &str = "feed_list";
 
 #[derive(Clone)]
 pub struct HomeState {
     pub selected_feed_index: usize,
     pub selected_feed_item_index: Option<usize>,
     pub focused_element: String,
-    pub current_feed_id: Option<i32>,
     pub feed_items: HashMap<i32, Vec<FeedItem>>,
     pub filtered_feeds: Vec<Feed>,
+    pub feeds: Vec<Feed>,
 }
 
 pub struct Home {
     widgets: HashMap<String, Box<dyn WidgetExt<HomeState>>>,
     show_sidebar: bool,
+    update_feeds_receiver: mpsc::Receiver<Vec<i32>>,
 
-    feeds: Vec<Feed>,
     state: HomeState,
     database: Database,
 }
@@ -41,48 +47,64 @@ impl Home {
         let mut feeds: Vec<Feed> = Vec::new();
         if let Ok(f) = Feed::get_all(&database).await {
             feeds = f;
-            // feeds = f[0..2].to_vec();
+        }
+        // TODO: Adding configuration for background sync
+        let background_sync = false;
+        let (sender, receiver) = channel();
+        if background_sync {
+            spawn_update_feeds(feeds.clone(), sender).await;
         }
         let mut feed_items: HashMap<i32, Vec<FeedItem>> =
             feeds.iter().map(|feed| return (feed.id, vec![])).collect();
 
-        for feed in &feeds {
+        for feed in &mut feeds {
             let feed_id = feed.id;
             match FeedItem::get_by_feed_id(feed_id, &database).await {
-                Ok(feed_item) => feed_items.insert(feed_id, feed_item),
+                Ok(feed_item) => {
+                    feed.feed_count = feed_item.len() as i32;
+                    feed_items.insert(feed_id, feed_item);
+                }
                 Err(e) => panic!("Failed to fetch feed items for feed id {}", e),
             };
         }
 
         let sidebar = Sidebar::new(feeds.clone());
-        let selected_feed = feeds.get(0).unwrap().clone();
-        let feed_list = FeedList::new(
-            selected_feed.clone(),
-            feed_items.get(&selected_feed.id).unwrap().clone(),
-        );
+        let selected_feed = feeds.get(0).or(None);
+        let selected_feed_items = selected_feed
+            .as_ref()
+            .and_then(|f| feed_items.get(&f.id).cloned())
+            .unwrap_or_default();
+        let feed_list = FeedList::new(selected_feed.cloned(), selected_feed_items);
         let mut widgets: HashMap<String, Box<dyn WidgetExt<HomeState>>> = HashMap::new();
-        widgets.insert(String::from("sidebar"), Box::new(sidebar));
-        widgets.insert(String::from("feed_list"), Box::new(feed_list));
+        widgets.insert(String::from(SIDEBAR), Box::new(sidebar));
+        widgets.insert(String::from(FEED_LIST), Box::new(feed_list));
 
         let state = HomeState {
             selected_feed_index: 0,
             selected_feed_item_index: None,
-            focused_element: String::from("sidebar"),
-            current_feed_id: None,
+            focused_element: String::from(FEED_LIST),
             feed_items,
             filtered_feeds: feeds.clone(),
+            feeds,
         };
 
         Home {
             widgets,
-            feeds,
             show_sidebar: true,
             state,
             database,
+            update_feeds_receiver: receiver,
         }
     }
 
     fn update(&mut self) {
+        match self.update_feeds_receiver.try_recv() {
+            Ok(_) => {
+                // println!("Received {} results", results.len());
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {}
+        }
         for (id, widget) in self.widgets.iter_mut() {
             if *id == self.state.focused_element {
                 widget.focus();
@@ -99,7 +121,7 @@ impl Screen for Home {
         &self,
         frame: &mut ratatui::Frame<'_>,
         area: ratatui::prelude::Rect,
-        app: &crate::app::App,
+        _app: &crate::app::App,
     ) {
         let b: Block = Block::default()
             .title(Line::from(" trss ").centered())
@@ -135,10 +157,15 @@ impl Screen for Home {
         }
     }
 
-    fn handle_input(&mut self, event: &crate::event::EventHandler) -> Option<AppEvent> {
+    fn handle_input(&mut self, event: &EventHandler, state: &AppState) -> Option<AppEvent> {
+        let mut new_state = state.clone();
         let event = event.next().unwrap();
-        if let Some(widget) = self.widgets.get_mut(&self.state.focused_element) {
-            widget.handle_input(&event);
+        for (id, widget) in self.widgets.iter_mut() {
+            if *id == self.state.focused_element {
+                if let Some(new_state) = widget.handle_input(&self.state, &event) {
+                    self.state = new_state;
+                }
+            }
         }
         match event {
             Event::Tick => {
@@ -152,79 +179,104 @@ impl Screen for Home {
                             return Some(AppEvent::Quit);
                         }
                         KeyCode::BackTab => {
-                            let widgets: Vec<&str> =
-                                self.widgets.keys().map(|k| k.as_str()).collect();
-                            let mut focused_element_index: i32 = widgets
+                            let widgets: Vec<String> =
+                                self.widgets.keys().map(|k| k.to_string()).collect();
+                            let widget_count = widgets.len();
+                            let mut focused_element_index = widgets
                                 .iter()
-                                .position(|&k| k == self.state.focused_element.as_str())
-                                .unwrap_or(0)
-                                as i32;
-                            focused_element_index -= 1;
-                            if focused_element_index < 0 {
-                                focused_element_index = (widgets.len() as i32) - 1;
-                            }
-                            match widgets.get(focused_element_index as usize) {
-                                Some(widget) => {
-                                    self.state.focused_element = widget.to_string();
+                                .position(|k| k == self.state.focused_element.as_str())
+                                .unwrap_or(0);
+                            if let Some(widget) = self
+                                .widgets
+                                .get_mut(widgets[focused_element_index].as_str())
+                            {
+                                if let Some(child_widgets) = widget.get_child_widgets() {
+                                    if let Some(child_index) = widget.get_child_focused_index() {
+                                        if child_index < child_widgets.len() - 1 {
+                                            widget.set_child_focused_index(Some(
+                                                child_index.wrapping_sub(1) % child_widgets.len(),
+                                            ));
+                                        } else {
+                                            // FIXME: This is causing problem when the widget gets back the focus
+                                            widget.set_child_focused_index(None);
+                                            focused_element_index = focused_element_index
+                                                .wrapping_sub(1)
+                                                % widget_count;
+                                        }
+                                    } else {
+                                        widget.set_child_focused_index(Some(0));
+                                    }
+                                } else {
+                                    focused_element_index =
+                                        focused_element_index.wrapping_sub(1) % widget_count;
                                 }
-                                _ => {
-                                    self.state.focused_element = widgets[0].to_string();
-                                }
                             }
+
+                            self.state.focused_element = widgets[focused_element_index].to_string();
                             return None;
                         }
                         KeyCode::Tab => {
-                            let widgets: Vec<&str> =
-                                self.widgets.keys().map(|k| k.as_str()).collect();
+                            let widgets: Vec<String> =
+                                self.widgets.keys().map(|k| k.to_string()).collect();
+                            let widget_count = widgets.len();
                             let mut focused_element_index = widgets
                                 .iter()
-                                .position(|&k| k == self.state.focused_element.as_str())
+                                .position(|k| k == self.state.focused_element.as_str())
                                 .unwrap_or(0);
-                            focused_element_index += 1;
-                            if focused_element_index > widgets.len() {
+                            if let Some(widget) = self
+                                .widgets
+                                .get_mut(widgets[focused_element_index].as_str())
+                            {
+                                if let Some(child_widgets) = widget.get_child_widgets() {
+                                    if let Some(child_index) = widget.get_child_focused_index() {
+                                        if child_index < child_widgets.len() - 1 {
+                                            widget.set_child_focused_index(Some(child_index + 1));
+                                        } else {
+                                            // FIXME: This is causing problem when the widget gets back the focus
+                                            widget.set_child_focused_index(None);
+                                            focused_element_index += 1;
+                                        }
+                                    } else {
+                                        widget.set_child_focused_index(Some(0));
+                                    }
+                                } else {
+                                    focused_element_index += 1;
+                                }
+                            }
+                            if focused_element_index >= widget_count {
                                 focused_element_index = 0;
                             }
-                            match widgets.get(focused_element_index as usize) {
-                                Some(widget) => {
-                                    self.state.focused_element = widget.to_string();
-                                }
-                                _ => {
-                                    self.state.focused_element = widgets[0].to_string();
+                            self.state.focused_element = widgets[focused_element_index].to_string();
+                            return None;
+                        }
+                        KeyCode::Char('s') => {
+                            // FIXME: This also sends events down to the sidebar inserting characters in the search bar
+                            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                                self.show_sidebar = !self.show_sidebar;
+                            }
+                            return None;
+                        }
+                        KeyCode::Enter => {
+                            if self.state.focused_element == FEED_LIST {
+                                if let Some(feed_item_index) = self.state.selected_feed_item_index {
+                                    let feeds = self
+                                        .state
+                                        .filtered_feeds
+                                        .get(self.state.selected_feed_index)
+                                        .unwrap();
+
+                                    let feed_items = self.state.feed_items.get(&feeds.id).unwrap();
+                                    new_state.selected_feed_item =
+                                        Some(feed_items.get(feed_item_index).unwrap().clone());
+                                    return Some(AppEvent::ChangeScreen(
+                                        Screens::ViewFeed,
+                                        new_state,
+                                    ));
+                                    // return Some(AppEvent::ChangeScreen(Screens::ViewFeed));
                                 }
                             }
                             return None;
                         }
-                        KeyCode::Down => {
-                            if self.show_sidebar && self.state.focused_element.as_str() == "sidebar"
-                            {
-                                self.state.selected_feed_index += 1;
-                                if self.state.selected_feed_index >= self.state.filtered_feeds.len()
-                                {
-                                    self.state.selected_feed_index = 0;
-                                }
-                            }
-                            return None;
-                        }
-                        KeyCode::Up => {
-                            if self.show_sidebar && self.state.focused_element.as_str() == "sidebar"
-                            {
-                                self.state.selected_feed_index =
-                                    self.state.selected_feed_index.wrapping_sub(1);
-                                if self.state.selected_feed_index >= self.state.filtered_feeds.len()
-                                {
-                                    self.state.selected_feed_index =
-                                        self.state.filtered_feeds.len() - 1;
-                                }
-                            }
-                            return None;
-                        }
-                        // KeyCode::Char(c) => {
-                        //     if self.show_sidebar && self.state.focused_element.as_str() == "sidebar"
-                        //     {
-                        //         self.state.search_query.push(c);
-                        //     }
-                        //     return None;
-                        // }
                         _ => None::<AppEvent>,
                     };
                 }
@@ -235,4 +287,6 @@ impl Screen for Home {
             // TODO: Set sidebar = false if the screen is too small
         }
     }
+
+    fn reset(&mut self) {}
 }

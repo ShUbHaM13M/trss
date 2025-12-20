@@ -1,5 +1,9 @@
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
 
+pub mod parse_html;
+
+pub const DEFAULT_DATE_FORMAT: &str = "%a, %d %b %Y %H:%M:%S %z";
+
 pub fn centered(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
