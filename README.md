@@ -32,17 +32,17 @@ cargo run
 
 ## Project Structure
 
-trss/
-├── src/
-│   ├── main.rs
-│   ├── models/
-│   ├── screens/
-│   ├── utils/
-│   ├── app.rs/
-│   ├── events.rs/
-│   └── widgets/
-├── Cargo.toml
-└── README.md
+trss/  
+├── src/  
+│   ├── main.rs  
+│   ├── models/  
+│   ├── screens/  
+│   ├── utils/  
+│   ├── app.rs/  
+│   ├── events.rs/  
+│   └── widgets/  
+├── Cargo.toml  
+└── README.md  
 
 ---
 
