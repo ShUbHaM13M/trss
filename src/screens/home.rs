@@ -1,118 +1,128 @@
 use ratatui::crossterm::event::KeyModifiers;
-use ratatui::prelude::Constraint;
+use ratatui::widgets::WidgetRef;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEventKind},
-    layout::{Direction, Layout, Rect},
-    style::{Color, Style},
-    text::Line,
-    widgets::{Block, BorderType, Borders},
+    layout::{Direction, Layout},
+    widgets::Block,
 };
+use ratatui::{prelude::Constraint, style::Stylize};
+use tokio::sync::mpsc;
 
-use std::collections::HashMap;
-use std::sync::mpsc::{self, channel};
-
-use crate::app::{AppEvent, AppState, Screens};
-use crate::event::EventHandler;
+use crate::app::{AppCommand, AppEvent, Screens};
 use crate::models::db::Database;
-use crate::models::feed::{Feed, spawn_update_feeds};
+use crate::models::feed::{Feed, FeedSource};
 use crate::models::feed_item::FeedItem;
-use crate::widgets::WidgetExt;
-use crate::widgets::feed_list::FeedList;
-use crate::{event::Event, screens::Screen, widgets::sidebar::Sidebar};
+use crate::screens::{ScreenContext, ScreenContextMut};
+use crate::widgets::add_feed::AddFeed;
+use crate::widgets::feed_list::{FeedList, FeedListView};
+use crate::widgets::header::Header;
+use crate::widgets::sidebar::{Sidebar, SidebarView};
+use crate::{event::Event, screens::Screen};
 
-const SIDEBAR: &str = "sidebar";
-const FEED_LIST: &str = "feed_list";
+#[derive(Clone, PartialEq)]
+pub enum FocusedWidget {
+    Search,
+    Categories,
+    FeedList,
+    FeedItems,
+    AddFeed,
+}
 
 #[derive(Clone)]
 pub struct HomeState {
-    pub selected_feed_index: usize,
     pub selected_feed_item_index: Option<usize>,
-    pub focused_element: String,
-    pub feed_items: HashMap<i32, Vec<FeedItem>>,
+    // pub selected_navigation_index: usize,
+    pub focused_widget: FocusedWidget,
     pub filtered_feeds: Vec<Feed>,
-    pub feeds: Vec<Feed>,
+    pub search_query: String,
+    pub new_feed_title: String,
+    pub new_feed_url: String,
+    pub add_feed_index: usize,
 }
 
 pub struct Home {
-    widgets: HashMap<String, Box<dyn WidgetExt<HomeState>>>,
     show_sidebar: bool,
-    update_feeds_receiver: mpsc::Receiver<Vec<i32>>,
-
+    // update_feeds_receiver: Option<Receiver<Vec<i32>>>,
     state: HomeState,
     database: Database,
 }
 
 impl Home {
-    pub async fn new(database: Database) -> Self {
-        let mut feeds: Vec<Feed> = Vec::new();
-        if let Ok(f) = Feed::get_all(&database).await {
-            feeds = f;
-        }
-        // TODO: Adding configuration for background sync
-        let background_sync = false;
-        let (sender, receiver) = channel();
-        if background_sync {
-            spawn_update_feeds(feeds.clone(), sender).await;
-        }
-        let mut feed_items: HashMap<i32, Vec<FeedItem>> =
-            feeds.iter().map(|feed| return (feed.id, vec![])).collect();
-
-        for feed in &mut feeds {
-            let feed_id = feed.id;
-            match FeedItem::get_by_feed_id(feed_id, &database).await {
-                Ok(feed_item) => {
-                    feed.feed_count = feed_item.len() as i32;
-                    feed_items.insert(feed_id, feed_item);
-                }
-                Err(e) => panic!("Failed to fetch feed items for feed id {}", e),
-            };
-        }
-
-        let sidebar = Sidebar::new(feeds.clone());
-        let selected_feed = feeds.get(0).or(None);
-        let selected_feed_items = selected_feed
-            .as_ref()
-            .and_then(|f| feed_items.get(&f.id).cloned())
-            .unwrap_or_default();
-        let feed_list = FeedList::new(selected_feed.cloned(), selected_feed_items);
-        let mut widgets: HashMap<String, Box<dyn WidgetExt<HomeState>>> = HashMap::new();
-        widgets.insert(String::from(SIDEBAR), Box::new(sidebar));
-        widgets.insert(String::from(FEED_LIST), Box::new(feed_list));
+    pub async fn new(database: Database, feeds: &Vec<Feed>) -> Self {
+        // let (_sender, receiver) = channel();
+        // if APP_CONFIG.background_sync {
+        //     spawn_update_feeds(feeds.clone(), sender).await;
+        // }
 
         let state = HomeState {
-            selected_feed_index: 0,
+            // selected_navigation_index: 0,
             selected_feed_item_index: None,
-            focused_element: String::from(FEED_LIST),
-            feed_items,
-            filtered_feeds: feeds.clone(),
-            feeds,
+            focused_widget: FocusedWidget::FeedList,
+            filtered_feeds: feeds
+                .iter()
+                .filter(|f| {
+                    let title = f.title.to_lowercase();
+                    title != "favourites" && title != "readlist"
+                })
+                .cloned()
+                .collect(),
+            search_query: String::new(),
+            new_feed_title: String::new(),
+            new_feed_url: String::new(),
+            add_feed_index: 0,
         };
 
         Home {
-            widgets,
             show_sidebar: true,
             state,
             database,
-            update_feeds_receiver: receiver,
         }
     }
 
-    fn update(&mut self) {
-        match self.update_feeds_receiver.try_recv() {
-            Ok(_) => {
-                // println!("Received {} results", results.len());
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => {}
+    pub fn filter_feeds(&mut self, feeds: &[Feed], current_source: &FeedSource) {
+        self.state.filtered_feeds = match current_source {
+            FeedSource::Feed(_) => feeds
+                .iter()
+                .filter(|f| {
+                    let t = f.title.to_lowercase();
+                    t != "favourites" && t != "readlist"
+                })
+                .cloned()
+                .collect(),
+            FeedSource::Favourites => feeds
+                .iter()
+                .filter(|f| f.title.to_lowercase() == "favourites")
+                .cloned()
+                .collect(),
+            FeedSource::Readlist => feeds
+                .iter()
+                .filter(|f| f.title.to_lowercase() == "readlist")
+                .cloned()
+                .collect(),
+        };
+
+        if !self.state.search_query.is_empty() {
+            let query = self.state.search_query.to_lowercase();
+            self.state
+                .filtered_feeds
+                .retain(|f| f.title.to_lowercase().contains(&query));
         }
-        for (id, widget) in self.widgets.iter_mut() {
-            if *id == self.state.focused_element {
-                widget.focus();
-            } else {
-                widget.blur();
+    }
+
+    fn add_feed(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
+        let title = self.state.new_feed_title.clone();
+        let url = self.state.new_feed_url.clone();
+        let database = self.database.clone();
+        tokio::spawn(async move {
+            match Feed::add(title, url, &database).await {
+                Ok(feed) => {
+                    let _ = tx.send(AppEvent::FeedAdded(feed));
+                }
+                Err(err) => {
+                    let _ = tx.send(AppEvent::FeedAddFailed(err.to_string()));
+                }
             }
-            widget.update(self.state.clone())
-        }
+        });
     }
 }
 
@@ -121,170 +131,386 @@ impl Screen for Home {
         &self,
         frame: &mut ratatui::Frame<'_>,
         area: ratatui::prelude::Rect,
-        _app: &crate::app::App,
+        ctx: &ScreenContext,
     ) {
-        let b: Block = Block::default()
-            .title(Line::from(" trss ").centered())
-            .style(Style::default().fg(Color::White))
-            .border_style(Style::default().fg(Color::White))
-            .border_type(BorderType::Double)
-            .borders(Borders::ALL);
+        let container = Block::default().bg(ctx.config.current_theme.background);
+        let inner = container.inner(area);
+        frame.render_widget(container, area);
 
-        frame.render_widget(b, area);
+        let [header_area, content_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Max(3), Constraint::Fill(1)])
+            .areas(inner);
 
-        // TODO: Update with some constant values
-        let block_area = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+        // Header
+        {
+            let header = Header {
+                current_screen: Screens::Home,
+                theme: ctx.config.current_theme,
+                search_query: &self.state.search_query,
+                search_focused: self.state.focused_widget == FocusedWidget::Search,
+                syncing: ctx.state.background_syncing,
+            };
 
-        if self.show_sidebar {
-            let [sidebar_area, main_area] = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints(vec![Constraint::Percentage(30), Constraint::Percentage(70)])
-                .areas(block_area);
+            header.render_ref(header_area, frame.buffer_mut());
+        }
 
-            let sidebar = self.widgets.get("sidebar").unwrap();
-            sidebar.render_ref(sidebar_area, frame.buffer_mut());
+        // Content
+        {
+            let items: &Vec<FeedItem> = match ctx.state.selected_source {
+                FeedSource::Feed(feed_id) => {
+                    if let Some(collection) = ctx.state.feed_items.get(&feed_id) {
+                        &collection.items
+                    } else {
+                        &Vec::new()
+                    }
+                }
+                FeedSource::Favourites => {
+                    let mut favourites: Vec<FeedItem> = vec![];
+                    for collection in ctx.state.feed_items.values() {
+                        for item in &collection.items {
+                            if ctx.state.favourites.contains(&item.id) {
+                                favourites.push(item.clone());
+                            }
+                        }
+                    }
+                    &favourites.clone()
+                }
+                FeedSource::Readlist => {
+                    let mut readlist: Vec<FeedItem> = vec![];
+                    for collection in ctx.state.feed_items.values() {
+                        for item in &collection.items {
+                            if ctx.state.readlist.contains(&item.id) {
+                                readlist.push(item.clone());
+                            }
+                        }
+                    }
+                    &readlist.clone()
+                }
+            };
 
-            let feed_list = self.widgets.get("feed_list").unwrap();
-            feed_list.render_ref(main_area, frame.buffer_mut());
-        } else {
-            let [main_area] = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints(vec![Constraint::Fill(1)])
-                .areas(block_area);
+            let feed_list_view = FeedListView {
+                focused: false,
+                title: match ctx.state.selected_source {
+                    FeedSource::Feed(_) => {
+                        let feed = &ctx.state.feeds[ctx.state.selected_feed_index];
+                        &feed.title.as_str()
+                    }
+                    FeedSource::Favourites => "Favourites",
+                    FeedSource::Readlist => "Readlist",
+                },
+                subtitle: match ctx.state.selected_source {
+                    FeedSource::Feed(_) => {
+                        let feed = &ctx.state.feeds[ctx.state.selected_feed_index];
+                        &feed.subtitle.as_str()
+                    }
+                    FeedSource::Favourites => "All your favourite feeds",
+                    FeedSource::Readlist => "All your articles from readlist",
+                },
+                // current_feed: Some(feed.clone()),
+                feed_items: items,
+                selected_feed_item_index: self.state.selected_feed_item_index,
+                theme: ctx.config.current_theme,
+                // subtitle: todo!(),
+            };
 
-            let feed_list = self.widgets.get("feed_list").unwrap();
-            feed_list.render_ref(main_area, frame.buffer_mut());
+            if self.show_sidebar {
+                let [sidebar_area, feed_area] = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(vec![Constraint::Percentage(25), Constraint::Fill(1)])
+                    .areas(content_area);
+
+                let sidebar_view = SidebarView {
+                    items: self.state.filtered_feeds.clone(),
+                    selected_feed_index: ctx.state.selected_feed_index,
+                    selected_navigation_index: match ctx.state.selected_source {
+                        FeedSource::Feed(_) => 0,
+                        FeedSource::Favourites => 1,
+                        FeedSource::Readlist => 2,
+                    },
+                    feed_count: ctx.state.feeds.len(),
+                    favourite_count: ctx.state.favourites.len(),
+                    readlist_count: ctx.state.readlist.len(),
+                    theme: ctx.config.current_theme,
+                };
+                let sidebar = Sidebar::new(&sidebar_view);
+                sidebar.render_ref(sidebar_area, frame.buffer_mut());
+
+                let feed_list = FeedList::new(&feed_list_view);
+                feed_list.render_ref(feed_area, frame.buffer_mut());
+            } else {
+                let feed_list = FeedList::new(&feed_list_view);
+                feed_list.render_ref(content_area, frame.buffer_mut());
+            }
+        }
+
+        if self.state.focused_widget == FocusedWidget::AddFeed {
+            let add_feed = AddFeed::new(
+                self.state.new_feed_title.clone(),
+                self.state.new_feed_url.clone(),
+                self.state.add_feed_index,
+                ctx.config.current_theme,
+            );
+            add_feed.render_ref(inner, frame.buffer_mut());
         }
     }
 
-    fn handle_input(&mut self, event: &EventHandler, state: &AppState) -> Option<AppEvent> {
-        let mut new_state = state.clone();
-        let event = event.next().unwrap();
-        for (id, widget) in self.widgets.iter_mut() {
-            if *id == self.state.focused_element {
-                if let Some(new_state) = widget.handle_input(&self.state, &event) {
-                    self.state = new_state;
-                }
-            }
-        }
+    fn handle_input(&mut self, event: &Event, ctx: &ScreenContextMut) {
+        self.filter_feeds(&ctx.state.feeds, &ctx.state.selected_source);
         match event {
-            Event::Tick => {
-                self.update();
-                return None;
-            }
+            Event::Tick => {}
             Event::Key(key) => {
                 if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Esc => {
-                            return Some(AppEvent::Quit);
-                        }
-                        KeyCode::BackTab => {
-                            let widgets: Vec<String> =
-                                self.widgets.keys().map(|k| k.to_string()).collect();
-                            let widget_count = widgets.len();
-                            let mut focused_element_index = widgets
-                                .iter()
-                                .position(|k| k == self.state.focused_element.as_str())
-                                .unwrap_or(0);
-                            if let Some(widget) = self
-                                .widgets
-                                .get_mut(widgets[focused_element_index].as_str())
-                            {
-                                if let Some(child_widgets) = widget.get_child_widgets() {
-                                    if let Some(child_index) = widget.get_child_focused_index() {
-                                        if child_index < child_widgets.len() - 1 {
-                                            widget.set_child_focused_index(Some(
-                                                child_index.wrapping_sub(1) % child_widgets.len(),
-                                            ));
-                                        } else {
-                                            // FIXME: This is causing problem when the widget gets back the focus
-                                            widget.set_child_focused_index(None);
-                                            focused_element_index = focused_element_index
-                                                .wrapping_sub(1)
-                                                % widget_count;
-                                        }
-                                    } else {
-                                        widget.set_child_focused_index(Some(0));
-                                    }
+                    if self.state.focused_widget == FocusedWidget::Search {
+                        match key.code {
+                            KeyCode::Char('/') => {
+                                self.state.focused_widget = FocusedWidget::FeedList;
+                            }
+                            KeyCode::Backspace => {
+                                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.state.search_query.clear();
                                 } else {
-                                    focused_element_index =
-                                        focused_element_index.wrapping_sub(1) % widget_count;
+                                    self.state.search_query.pop();
                                 }
                             }
+                            KeyCode::Char(c) => {
+                                self.state.search_query.push(c);
+                            }
+                            _ => {}
+                        }
+                        return;
+                    } else if self.state.focused_widget == FocusedWidget::AddFeed {
+                        match key.code {
+                            KeyCode::Esc => {
+                                if self.state.focused_widget == FocusedWidget::AddFeed {
+                                    self.state.add_feed_index = 0;
+                                    self.state.new_feed_title = String::new();
+                                    self.state.new_feed_url = String::new();
+                                    self.state.focused_widget = FocusedWidget::FeedList;
+                                    let _ = ctx.command_tx.send(AppCommand::CloseAddFeedPopup);
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if self.state.add_feed_index == 2 {
+                                    self.add_feed(ctx.event_tx.clone());
+                                    self.state.add_feed_index = 0;
+                                    self.state.new_feed_title = String::new();
+                                    self.state.new_feed_url = String::new();
+                                    self.state.focused_widget = FocusedWidget::FeedList;
+                                    let _ = ctx.command_tx.send(AppCommand::CloseAddFeedPopup);
+                                    let _ = ctx
+                                        .command_tx
+                                        .send(AppCommand::SelectSource(FeedSource::Feed(0)));
+                                }
+                            }
+                            KeyCode::Tab => {
+                                self.state.add_feed_index += 1;
+                                if self.state.add_feed_index > 2 {
+                                    self.state.add_feed_index = 0;
+                                }
+                            }
+                            KeyCode::BackTab => {
+                                if self.state.add_feed_index == 0 {
+                                    self.state.add_feed_index = 2;
+                                } else {
+                                    self.state.add_feed_index -= 1;
+                                }
+                            }
+                            KeyCode::Char(ch) => match self.state.add_feed_index {
+                                0 => self.state.new_feed_title.push(ch),
+                                1 => self.state.new_feed_url.push(ch),
+                                _ => {}
+                            },
+                            KeyCode::Backspace => match self.state.add_feed_index {
+                                0 => {
+                                    self.state.new_feed_title.pop();
+                                }
+                                1 => {
+                                    self.state.new_feed_url.pop();
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                        return;
+                    }
 
-                            self.state.focused_element = widgets[focused_element_index].to_string();
-                            return None;
-                        }
-                        KeyCode::Tab => {
-                            let widgets: Vec<String> =
-                                self.widgets.keys().map(|k| k.to_string()).collect();
-                            let widget_count = widgets.len();
-                            let mut focused_element_index = widgets
-                                .iter()
-                                .position(|k| k == self.state.focused_element.as_str())
-                                .unwrap_or(0);
-                            if let Some(widget) = self
-                                .widgets
-                                .get_mut(widgets[focused_element_index].as_str())
-                            {
-                                if let Some(child_widgets) = widget.get_child_widgets() {
-                                    if let Some(child_index) = widget.get_child_focused_index() {
-                                        if child_index < child_widgets.len() - 1 {
-                                            widget.set_child_focused_index(Some(child_index + 1));
-                                        } else {
-                                            // FIXME: This is causing problem when the widget gets back the focus
-                                            widget.set_child_focused_index(None);
-                                            focused_element_index += 1;
-                                        }
-                                    } else {
-                                        widget.set_child_focused_index(Some(0));
-                                    }
-                                } else {
-                                    focused_element_index += 1;
+                    match key.code {
+                        KeyCode::Enter => match self.state.focused_widget {
+                            FocusedWidget::FeedList => {
+                                self.state.focused_widget = FocusedWidget::FeedItems;
+                            }
+                            FocusedWidget::FeedItems => {
+                                if let Some(feed_item_index) = self.state.selected_feed_item_index {
+                                    let _ =
+                                        ctx.command_tx.send(AppCommand::OpenFeed(feed_item_index));
                                 }
                             }
-                            if focused_element_index >= widget_count {
-                                focused_element_index = 0;
+                            _ => {}
+                        },
+                        KeyCode::Char('d') => {
+                            if self.state.focused_widget == FocusedWidget::FeedList {
+                                let _ = ctx.command_tx.send(AppCommand::DeleteSelectedFeed);
                             }
-                            self.state.focused_element = widgets[focused_element_index].to_string();
-                            return None;
                         }
-                        KeyCode::Char('s') => {
-                            // FIXME: This also sends events down to the sidebar inserting characters in the search bar
+                        KeyCode::Char('r') => {
+                            let _ = ctx.command_tx.send(AppCommand::StartBackgroundSync);
+                        }
+                        KeyCode::Char('a') => {
+                            self.state.focused_widget = FocusedWidget::AddFeed;
+                            let _ = ctx.command_tx.send(AppCommand::OpenAddFeedPopup);
+                        }
+                        KeyCode::Char('b') => {
                             if key.modifiers.contains(KeyModifiers::CONTROL) {
                                 self.show_sidebar = !self.show_sidebar;
-                            }
-                            return None;
-                        }
-                        KeyCode::Enter => {
-                            if self.state.focused_element == FEED_LIST {
-                                if let Some(feed_item_index) = self.state.selected_feed_item_index {
-                                    let feeds = self
-                                        .state
-                                        .filtered_feeds
-                                        .get(self.state.selected_feed_index)
-                                        .unwrap();
-
-                                    let feed_items = self.state.feed_items.get(&feeds.id).unwrap();
-                                    new_state.selected_feed_item =
-                                        Some(feed_items.get(feed_item_index).unwrap().clone());
-                                    return Some(AppEvent::ChangeScreen(
-                                        Screens::ViewFeed,
-                                        new_state,
-                                    ));
-                                    // return Some(AppEvent::ChangeScreen(Screens::ViewFeed));
+                                if self.show_sidebar {
+                                    self.state.focused_widget = FocusedWidget::FeedList;
+                                } else {
+                                    self.state.focused_widget = FocusedWidget::FeedItems;
                                 }
                             }
-                            return None;
                         }
-                        _ => None::<AppEvent>,
+                        KeyCode::Left | KeyCode::Right => {
+                            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                                if self.state.focused_widget == FocusedWidget::FeedList {
+                                    self.state.focused_widget = FocusedWidget::FeedItems
+                                } else {
+                                    self.state.focused_widget = FocusedWidget::FeedList
+                                }
+                            }
+                        }
+                        KeyCode::Char('h') => {
+                            if self.state.focused_widget == FocusedWidget::FeedList {
+                                self.state.focused_widget = FocusedWidget::FeedItems
+                            } else {
+                                self.state.focused_widget = FocusedWidget::FeedList
+                            }
+                        }
+                        KeyCode::Char('l') => {
+                            if self.state.focused_widget == FocusedWidget::FeedList {
+                                self.state.focused_widget = FocusedWidget::FeedItems
+                            } else {
+                                self.state.focused_widget = FocusedWidget::FeedList
+                            }
+                        }
+                        KeyCode::Char('n') => {
+                            self.state.focused_widget =
+                                if self.state.focused_widget == FocusedWidget::Categories {
+                                    match ctx.state.selected_source {
+                                        FeedSource::Feed(_) => FocusedWidget::FeedList,
+                                        _ => FocusedWidget::FeedItems,
+                                    }
+                                } else {
+                                    FocusedWidget::Categories
+                                };
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => match self.state.focused_widget {
+                            FocusedWidget::FeedList => {
+                                if self.state.filtered_feeds.is_empty() {
+                                    return;
+                                }
+                                let feed_index = ctx.state.selected_feed_index.wrapping_add(1)
+                                    % self.state.filtered_feeds.len();
+                                let feed_id = self.state.filtered_feeds[feed_index].id;
+                                let _ = ctx
+                                    .command_tx
+                                    .send(AppCommand::SelectSource(FeedSource::Feed(feed_id)));
+                            }
+                            FocusedWidget::FeedItems => {
+                                self.state.selected_feed_item_index =
+                                    match self.state.selected_feed_item_index {
+                                        Some(index) => {
+                                            let feed =
+                                                &ctx.state.feeds[ctx.state.selected_feed_index];
+                                            let collection = &ctx.state.feed_items[&feed.id];
+                                            let item_count = collection.items.len();
+                                            if item_count == 0 {
+                                                Some(0)
+                                            } else {
+                                                Some(index.wrapping_add(1) % item_count)
+                                            }
+                                        }
+                                        _ => Some(0),
+                                    };
+                            }
+                            FocusedWidget::Categories => {
+                                let next_source = match ctx.state.selected_source {
+                                    FeedSource::Feed(_) => FeedSource::Favourites,
+                                    FeedSource::Favourites => FeedSource::Readlist,
+                                    FeedSource::Readlist => {
+                                        FeedSource::Feed(ctx.state.feeds.first().unwrap().id)
+                                    }
+                                };
+                                let _ = ctx.command_tx.send(AppCommand::SelectSource(next_source));
+                                self.filter_feeds(&ctx.state.feeds, &ctx.state.selected_source);
+                            }
+                            FocusedWidget::Search => {}
+                            FocusedWidget::AddFeed => {}
+                        },
+                        KeyCode::Up | KeyCode::Char('k') => match self.state.focused_widget {
+                            FocusedWidget::Categories => {
+                                let next_source = match ctx.state.selected_source {
+                                    FeedSource::Feed(_) => FeedSource::Readlist,
+                                    FeedSource::Favourites => {
+                                        FeedSource::Feed(ctx.state.feeds.first().unwrap().id)
+                                    }
+                                    FeedSource::Readlist => FeedSource::Favourites,
+                                };
+                                let _ = ctx.command_tx.send(AppCommand::SelectSource(next_source));
+                                self.filter_feeds(&ctx.state.feeds, &ctx.state.selected_source);
+                            }
+                            FocusedWidget::FeedList => {
+                                let mut feed_index = ctx.state.selected_feed_index;
+                                if self.state.filtered_feeds.is_empty() {
+                                    return;
+                                }
+                                if feed_index == 0 {
+                                    feed_index = self.state.filtered_feeds.len() - 1;
+                                } else {
+                                    feed_index -= 1;
+                                }
+                                let feed_id = self.state.filtered_feeds[feed_index].id;
+                                let _ = ctx
+                                    .command_tx
+                                    .send(AppCommand::SelectSource(FeedSource::Feed(feed_id)));
+                            }
+                            FocusedWidget::FeedItems => {
+                                let feed = &ctx.state.feeds[ctx.state.selected_feed_index];
+                                let collection = &ctx.state.feed_items[&feed.id];
+                                let item_count = collection.items.len();
+                                if item_count == 0 {
+                                    self.state.selected_feed_item_index = Some(0);
+                                    return;
+                                }
+                                self.state.selected_feed_item_index =
+                                    match self.state.selected_feed_item_index {
+                                        Some(index) => {
+                                            if index == 0 {
+                                                Some(item_count - 1)
+                                            } else {
+                                                Some(index - 1)
+                                            }
+                                        }
+                                        _ => Some(item_count - 1),
+                                    };
+                            }
+                            FocusedWidget::Search => {}
+                            FocusedWidget::AddFeed => {}
+                        },
+                        KeyCode::Char('/') => {
+                            self.state.focused_widget =
+                                if self.state.focused_widget == FocusedWidget::Search {
+                                    FocusedWidget::FeedList
+                                } else {
+                                    FocusedWidget::Search
+                                };
+                        }
+                        _ => {}
                     };
                 }
-                None
             }
-            Event::Mouse(_) => None,
-            Event::Resize(_, _) => None,
-            // TODO: Set sidebar = false if the screen is too small
+            Event::Mouse(_) => {}
+            Event::Resize(_, _) => {} // TODO: Set sidebar = false if the screen is too small
         }
     }
 

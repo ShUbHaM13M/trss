@@ -1,15 +1,16 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::prelude::Stylize;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, StatefulWidget, Widget, WidgetRef, Wrap,
+    ScrollbarState, StatefulWidget, Widget, Wrap,
 };
 use tl::{Node, Parser};
 
 use std::collections::HashMap;
+
+use crate::models::theme::Theme;
 
 lazy_static! {
     static ref HTML_ENTITIES: HashMap<&'static str, &'static str> = {
@@ -44,7 +45,7 @@ lazy_static! {
     };
 }
 
-pub fn parse_html(html: String) -> Vec<ParagraphData<'static>> {
+pub fn parse_html(html: String) -> Vec<ParagraphData> {
     let dom = tl::parse(&html, tl::ParserOptions::default()).unwrap();
     let parser = dom.parser();
 
@@ -152,7 +153,7 @@ fn parse_block<'a>(node: &Node, parser: &Parser) -> Vec<Line<'a>> {
     }
 }
 
-fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData<'a>> {
+fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData> {
     match node {
         Node::Tag(tag) => {
             let tag_name = tag.name().as_utf8_str();
@@ -164,7 +165,7 @@ fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData<'a>> {
             }
 
             match tag_name {
-                "p" | "div" | "h3" => {
+                "p" | "div" | "h3" | "h2" => {
                     let mut spans: Vec<Span> = vec![];
 
                     for child in tag.children().top().iter().filter_map(|h| h.get(parser)) {
@@ -232,7 +233,7 @@ fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData<'a>> {
                             // TODO: Here we can add syntax highlighting
                             Line::from(Span::styled(
                                 line.to_string(),
-                                Style::default().fg(Color::Black),
+                                Style::default().fg(Color::Black).bg(Color::LightGreen),
                             ))
                         })
                         .collect::<Vec<Line>>();
@@ -254,7 +255,7 @@ fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData<'a>> {
                         lines.extend(
                             parse_block(child, parser)
                                 .iter()
-                                .filter(|line| line.spans.iter().count() > 0)
+                                .filter(|line| line.spans.iter().any(|s| s.content.len() > 0))
                                 .map(|line| {
                                     let mut ls = Line::from("");
                                     for l in line.iter() {
@@ -325,17 +326,17 @@ fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData<'a>> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ParagraphData<'a> {
-    text: Text<'a>,
-    block: Option<Block<'a>>,
+pub struct ParagraphData {
+    text: Text<'static>,
+    block: Option<Block<'static>>,
     alignment: Alignment,
     wrap: bool,
 }
 
-impl<'a> ParagraphData<'a> {
-    pub fn new<T>(text: T, block: Option<Block<'a>>) -> Self
+impl ParagraphData {
+    pub fn new<T>(text: T, block: Option<Block<'static>>) -> Self
     where
-        T: Into<Text<'a>>,
+        T: Into<Text<'static>>,
     {
         Self {
             text: text.into(),
@@ -345,38 +346,53 @@ impl<'a> ParagraphData<'a> {
         }
     }
 
-    fn to_paragraph(&self) -> Paragraph<'a> {
+    pub fn to_paragraph(&self) -> Paragraph<'_> {
         let mut p = Paragraph::new(self.text.clone()).alignment(self.alignment);
+
         if self.wrap {
             p = p.wrap(Wrap { trim: false });
         }
+
         if let Some(b) = &self.block {
             p = p.block(b.clone());
         }
+
         p
     }
 }
 
-pub struct ParagraphList<'a> {
-    pub paragraphs: Vec<ParagraphData<'a>>,
+pub struct ParagraphList {
+    pub paragraphs: Vec<ParagraphData>,
+    heights: Vec<u16>,
     scroll: usize,
+    // content_height: usize,
 }
 
-impl<'a> ParagraphList<'a> {
-    pub fn new(paragraphs: Vec<ParagraphData<'a>>) -> Self {
+impl ParagraphList {
+    pub fn new(paragraphs: Vec<ParagraphData>) -> Self {
         Self {
             paragraphs,
+            heights: vec![],
             scroll: 0,
         }
     }
-    pub fn set_paragraphs(&mut self, paragraphs: Vec<ParagraphData<'a>>) {
+    pub fn set_paragraphs(&mut self, paragraphs: Vec<ParagraphData>) {
+        self.heights = paragraphs
+            .iter()
+            .map(|p| (p.text.lines.len() as u16).max(1))
+            .collect();
         self.paragraphs = paragraphs;
+        self.scroll = 0;
     }
     pub fn scroll_down(&mut self) {
         self.scroll = self.scroll.saturating_add(1);
     }
     pub fn scroll_up(&mut self) {
         self.scroll = self.scroll.saturating_sub(1);
+    }
+    pub fn scroll_bottom(&mut self) {
+        // TODO: Need to find a way to scroll to bottom
+        // self.scroll = self.scroll.saturating_add();
     }
     pub fn reset_scroll(&mut self) {
         self.scroll = 0;
@@ -398,7 +414,7 @@ impl<'a> ParagraphList<'a> {
 
         lines
     }
-    fn measure_text_lines(text: &Text<'a>, width: u16) -> u16 {
+    fn measure_text_lines(text: &Text<'static>, width: u16) -> u16 {
         if width == 0 {
             return 0;
         }
@@ -414,13 +430,11 @@ impl<'a> ParagraphList<'a> {
         lines as u16
     }
 
-    fn block_vertical_extra(block: &Option<ratatui::widgets::Block<'a>>) -> u16 {
+    fn block_vertical_extra(block: &Option<ratatui::widgets::Block<'static>>) -> u16 {
         if block.is_some() { 2 } else { 0 }
     }
-}
 
-impl<'a> WidgetRef for ParagraphList<'a> {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+    pub fn render_ref(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let width = area.width.saturating_sub(2);
         if width == 0 || area.height == 0 {
             return;
@@ -455,7 +469,10 @@ impl<'a> WidgetRef for ParagraphList<'a> {
                 height: temp_h,
             });
 
-            let p = pd.to_paragraph();
+            let p = match pd.block.is_some() {
+                true => pd.to_paragraph(),
+                false => pd.to_paragraph().bg(theme.background).fg(theme.text),
+            };
             p.render(
                 Rect {
                     x: 0,
@@ -501,7 +518,12 @@ impl<'a> WidgetRef for ParagraphList<'a> {
 
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("↑"))
-            .end_symbol(Some("↓"));
+            .end_symbol(Some("↓"))
+            .begin_style(Style::default().bg(theme.background).fg(theme.text))
+            .end_style(Style::default().bg(theme.background).fg(theme.text))
+            .track_symbol(Some(" "))
+            .track_style(Style::default().bg(theme.text))
+            .thumb_style(Style::default().fg(theme.primary));
 
         let mut scrollbar_state = ScrollbarState::new(content_height).position(self.scroll);
         scrollbar.render(area, buf, &mut scrollbar_state);

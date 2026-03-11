@@ -1,7 +1,13 @@
 #[macro_use]
 extern crate lazy_static;
+
+use reqwest::get;
+use rss::Channel;
+
 use crate::app::App;
-use crate::utils::parse_html::parse_html;
+use crate::models::db::Database;
+use crate::models::feed::Feed;
+use crate::models::feed_item::FeedItem;
 
 pub mod app;
 pub mod event;
@@ -16,31 +22,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut terminal = ratatui::init();
         let mut app = App::new().await;
         terminal.clear()?;
-        let result = app.run(terminal);
+        let result = app.run(terminal).await;
         ratatui::restore();
         result
     } else {
-        let html = r#"
-<pre>
-    <code class="language-c">
-        ~filename module.h
-        #ifndef MODULE_H_
-        #define MODULE_H_
-            void (*module_init)(void) = NULL;
-                void *(*module_pre_reload)(void) = NULL;
-                    void (*module_post_reload)(void *) = NULL;
-                void (*module_update)(void) = NULL; #endif
-        // MODULE_H_
+        let database = Database::init().await?;
+        let response = get("https://shubham-maurya.vercel.app/rss.xml").await?;
+        let body = response.bytes().await?;
+        let channel = Channel::read_from(&body[..])?;
+        FeedItem::insert_feed_items_from_channel(31, channel.items, &database).await?;
 
-        int main (void) {
-            printf("Hello World\n");
-            return 0;
-        }
-    </code>
-</pre>
-"#;
-        let html = parse_html(html.to_string());
-        println!("{:?}", html);
+        // let mut _feeds: Vec<Feed> = Vec::new();
+        // if let Ok(f) = Feed::get_all(&database).await {
+        //     _feeds = f;
+        // }
+        // let (sender, _) = channel();
+        // spawn_update_feeds(feeds.clone(), sender).await;
         Ok(())
     }
 }

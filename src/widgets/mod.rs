@@ -1,7 +1,11 @@
 use ratatui::widgets::WidgetRef;
 
+pub mod add_feed;
 pub mod feed_list;
+pub mod footer;
+pub mod header;
 pub mod sidebar;
+pub mod theme_selector;
 
 pub trait Focusable: WidgetRef {
     fn focus(&mut self);

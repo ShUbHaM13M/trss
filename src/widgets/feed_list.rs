@@ -1,156 +1,89 @@
 use ratatui::{
     buffer::Buffer,
-    crossterm::event::{KeyCode, KeyEventKind},
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
+    text::{Line, Text},
     widgets::{
-        Block, Borders, List, ListDirection, ListState, Paragraph, StatefulWidget, Widget,
+        Block, Borders, List, ListDirection, ListState, Padding, Paragraph, StatefulWidget, Widget,
         WidgetRef, Wrap,
     },
 };
 
-use crate::{
-    event::Event,
-    models::{feed::Feed, feed_item::FeedItem},
-    screens::home::HomeState,
-    widgets::{Focusable, WidgetExt},
-};
+use crate::models::{feed::Feed, feed_item::FeedItem, theme::Theme};
 
-pub struct FeedList {
-    focused: bool,
-    current_feed: Option<Feed>,
-    feed_items: Vec<FeedItem>,
-    selected_feed_item_index: Option<usize>,
+pub struct FeedListView<'a> {
+    pub focused: bool,
+    // pub current_feed: Option<Feed>,
+    pub title: &'a str,
+    pub subtitle: &'a str,
+    pub feed_items: &'a Vec<FeedItem>,
+    pub selected_feed_item_index: Option<usize>,
+    pub theme: Theme,
 }
 
-impl FeedList {
-    pub fn new(current_feed: Option<Feed>, feed_items: Vec<FeedItem>) -> Self {
-        let cf = if current_feed.is_none() {
-            None
-        } else {
-            current_feed.clone()
-        };
-        Self {
-            focused: false,
-            current_feed: cf,
-            feed_items,
-            selected_feed_item_index: None,
-        }
-    }
-    pub fn update_feed(&mut self, current_feed: Feed, current_feed_items: Vec<FeedItem>) {
-        self.current_feed = Some(current_feed);
-        self.feed_items = current_feed_items;
+pub struct FeedList<'a> {
+    view: &'a FeedListView<'a>,
+}
+
+impl<'a> FeedList<'a> {
+    pub fn new(view: &'a FeedListView) -> Self {
+        Self { view }
     }
 }
 
-impl Focusable for FeedList {
-    fn focus(&mut self) {
-        self.focused = true;
-    }
-
-    fn blur(&mut self) {
-        self.focused = false;
-    }
-    fn get_child_focused_index(&self) -> Option<usize> {
-        None
-    }
-    fn set_child_focused_index(&mut self, _index: Option<usize>) {}
-}
-
-impl WidgetRef for FeedList {
+impl<'a> WidgetRef for FeedList<'a> {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        let container = Block::default().style(match self.focused {
-            true => Style::default().fg(Color::White).bg(Color::Rgb(30, 30, 46)),
-            false => Style::default().fg(Color::White).bg(Color::Black),
-        });
+        let theme = self.view.theme;
+        let container = Block::default();
 
-        container.render(area, buf);
-        let inner_area = Rect::new(area.x + 2, area.y + 1, area.width - 3, area.height - 2);
         let [header_area, content_area] = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Percentage(10), Constraint::Fill(1)])
+            .constraints(vec![Constraint::Max(4), Constraint::Fill(1)])
+            .areas(container.inner(area));
+
+        container.render(area, buf);
+
+        let [title_area, subtitle_area] = Layout::default()
+            .direction(Direction::Vertical)
             .margin(1)
-            .areas(inner_area);
+            .constraints([Constraint::Fill(1), Constraint::Fill(2)])
+            .areas(header_area);
 
-        if let Some(current_feed) = self.current_feed.clone() {
-            let header = Paragraph::new(current_feed.subtitle.as_str())
-                .block(Block::new().title(current_feed.title.as_str()).bold())
-                .wrap(Wrap { trim: true });
-            header.render(header_area, buf);
-        }
+        let title = Paragraph::new(self.view.title).fg(self.view.theme.text);
+        let subtitle = Paragraph::new(self.view.subtitle)
+            .wrap(Wrap { trim: true })
+            .fg(self.view.theme.text);
 
-        if self.feed_items.is_empty() {
+        title.render(title_area, buf);
+        subtitle.render(subtitle_area, buf);
+
+        if self.view.feed_items.is_empty() {
             let empty_message =
                 Paragraph::new("No feed items available").block(Block::new().title("Empty"));
             empty_message.render(content_area, buf);
         } else {
-            let list = List::new(self.feed_items.iter().map(|item| item.title.clone()))
-                .block(Block::bordered().borders(Borders::TOP))
-                .style(Style::new().white())
-                .highlight_style(Style::new().bold().on_cyan())
-                .repeat_highlight_symbol(true)
-                .direction(ListDirection::TopToBottom);
+            let list = List::new(self.view.feed_items.iter().map(|item| {
+                let mut text = Text::default();
+                text.push_line("");
+                text.push_line(Line::from(format!("  {} ", item.title.clone()).bold()));
+                // TODO: Add author and other info
+                text.push_line(Line::from(format!("   {} ", item.summary.clone())));
+                text.push_line("");
+                text
+            }))
+            .block(
+                Block::default()
+                    .padding(Padding::symmetric(1, 1))
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(theme.border)),
+            )
+            .style(Style::new().fg(theme.text))
+            .highlight_style(Style::new().bold().bg(theme.primary).fg(Color::White))
+            .repeat_highlight_symbol(true)
+            .direction(ListDirection::TopToBottom);
 
-            let mut state = ListState::default().with_selected(self.selected_feed_item_index);
+            let mut state = ListState::default().with_selected(self.view.selected_feed_item_index);
             StatefulWidget::render(list, content_area, buf, &mut state);
         }
-    }
-}
-
-impl WidgetExt<HomeState> for FeedList {
-    fn update(&mut self, state: HomeState) {
-        if let Some(current_feed) = state.filtered_feeds.get(state.selected_feed_index) {
-            self.current_feed = Some(current_feed.clone());
-            if let Some(current_feed_items) = state.feed_items.get(&current_feed.id) {
-                self.feed_items = current_feed_items.clone();
-            }
-        } else {
-            self.current_feed = None;
-            self.feed_items = Vec::new();
-        }
-    }
-
-    fn handle_input(
-        &mut self,
-        state: &HomeState,
-        event: &crate::event::Event,
-    ) -> Option<HomeState> {
-        let mut new_state = state.clone();
-        match event {
-            Event::Key(key) => {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Down => {
-                            self.selected_feed_item_index = match self.selected_feed_item_index {
-                                Some(index) => Some(index.wrapping_add(1) % self.feed_items.len()),
-                                _ => Some(0),
-                            };
-                            new_state.selected_feed_item_index = self.selected_feed_item_index;
-                            return Some(new_state);
-                        }
-                        KeyCode::Up => {
-                            self.selected_feed_item_index = match self.selected_feed_item_index {
-                                Some(index) => {
-                                    if index == 0 {
-                                        Some(self.feed_items.len() - 1)
-                                    } else {
-                                        Some(index - 1)
-                                    }
-                                }
-                                _ => Some(self.feed_items.len() - 1),
-                            };
-                            new_state.selected_feed_item_index = self.selected_feed_item_index;
-                            return Some(new_state);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-        return None;
-    }
-    fn get_child_widgets(&self) -> Option<Vec<String>> {
-        None
     }
 }

@@ -23,7 +23,3 @@ pub fn centered(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         ])
         .split(popup_layout[1])[1]
 }
-
-pub fn unbox<T>(value: Box<T>) -> T {
-    *value
-}

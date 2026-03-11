@@ -1,0 +1,68 @@
+{
+  "Dark Classic": {
+    "primary": "#4F46E5",
+    "background": "#0F172A",
+    "text": "#E5E7EB",
+    "border": "#334155"
+  },
+  "Dark Emerald": {
+    "primary": "#10B981",
+    "background": "#020617",
+    "text": "#ECFEFF",
+    "border": "#064E3B"
+  },
+  "Dark Rose": {
+    "primary": "#FB7185",
+    "background": "#18181B",
+    "text": "#FAFAFA",
+    "border": "#3F3F46"
+  },
+  "Light Classic": {
+    "primary": "#2563EB",
+    "background": "#FFFFFF",
+    "text": "#111827",
+    "border": "#D1D5DB"
+  },
+  "Light Sand": {
+    "primary": "#CA8A04",
+    "background": "#FFFBEB",
+    "text": "#422006",
+    "border": "#FDE68A"
+  },
+  "Light Mint": {
+    "primary": "#059669",
+    "background": "#ECFEF3",
+    "text": "#064E3B",
+    "border": "#A7F3D0"
+  },
+  "Terminal Green": {
+    "primary": "#22C55E",
+    "background": "#000000",
+    "text": "#22C55E",
+    "border": "#14532D"
+  },
+  "Terminal Amber": {
+    "primary": "#F59E0B",
+    "background": "#000000",
+    "text": "#FBBF24",
+    "border": "#92400E"
+  },
+  "Mono High Contrast": {
+    "primary": "#FFFFFF",
+    "background": "#000000",
+    "text": "#FFFFFF",
+    "border": "#6B7280"
+  },
+  "Lavender": {
+    "primary": "#A78BFA",
+    "background": "#F5F3FF",
+    "text": "#312E81",
+    "border": "#DDD6FE"
+  },
+  "Peach": {
+    "primary": "#FB923C",
+    "background": "#FFF7ED",
+    "text": "#7C2D12",
+    "border": "#FED7AA"
+  }
+}

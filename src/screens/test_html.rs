@@ -3,21 +3,21 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::Line,
-    widgets::{Block, BorderType, Borders, WidgetRef},
+    widgets::{Block, BorderType, Borders},
 };
 
 use crate::{
-    app::{AppEvent, Screens},
+    app::{AppCommand, Screens},
     event::Event,
-    screens::Screen,
+    screens::{Screen, ScreenContext, ScreenContextMut},
     utils::parse_html::{ParagraphList, parse_html},
 };
 
-pub struct TestHtml<'a> {
-    list: ParagraphList<'a>,
+pub struct TestHtml {
+    list: ParagraphList,
 }
 
-impl<'a> TestHtml<'a> {
+impl TestHtml {
     pub fn new() -> Self {
         let text = parse_html(String::from(
             r#"
@@ -31,12 +31,12 @@ impl<'a> TestHtml<'a> {
     }
 }
 
-impl<'a> Screen for TestHtml<'a> {
+impl Screen for TestHtml {
     fn render(
         &self,
         frame: &mut ratatui::Frame<'_>,
         area: ratatui::prelude::Rect,
-        _app: &crate::app::App,
+        ctx: &ScreenContext,
     ) {
         let container = Block::default()
             .title(Line::from("HTML").centered())
@@ -52,39 +52,34 @@ impl<'a> Screen for TestHtml<'a> {
             .margin(1)
             .areas(inner_area);
 
-        self.list.render_ref(content_area, frame.buffer_mut());
+        self.list
+            .render_ref(content_area, frame.buffer_mut(), &ctx.config.current_theme);
     }
 
-    fn handle_input(
-        &mut self,
-        event: &crate::event::EventHandler,
-        state: &crate::app::AppState,
-    ) -> Option<crate::app::AppEvent> {
-        let event = event.next().unwrap();
+    fn handle_input(&mut self, event: &Event, ctx: &ScreenContextMut) {
         match event {
             Event::Key(key) => {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Esc => {
-                            return Some(AppEvent::Quit);
+                            let _ = ctx.command_tx.send(AppCommand::Quit);
                         }
                         KeyCode::Char('h') => {
-                            return Some(AppEvent::ChangeScreen(Screens::Home, state.clone()));
+                            let _ = ctx
+                                .command_tx
+                                .send(AppCommand::Navigate(Screens::Home, None));
                         }
                         KeyCode::Down => {
                             self.list.scroll_down();
-                            None
                         }
                         KeyCode::Up => {
                             self.list.scroll_up();
-                            None
                         }
-                        _ => None::<AppEvent>,
+                        _ => {}
                     };
                 }
-                None
             }
-            _ => None,
+            _ => {}
         }
     }
     fn reset(&mut self) {
