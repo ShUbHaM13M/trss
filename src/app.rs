@@ -27,7 +27,7 @@ pub enum AppEvent {
     FeedAddFailed(String),
     BackgroundSyncStarted,
     BackgroundSyncFinished,
-    FeedsUpdated(Vec<i32>),
+    FeedsUpdated(Vec<i32>, Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +48,7 @@ pub struct AppState {
     pub selected_feed_item_id: Option<String>,
     pub background_syncing: bool,
     pub overlay: Overlay,
+    pub status_message: Option<String>,
 }
 
 #[derive(Clone)]
@@ -186,6 +187,7 @@ impl App {
                 overlay: Overlay::None,
                 favourites,
                 readlist: HashSet::new(),
+                status_message: None,
             },
             config: AppConfig {
                 background_sync: user_settings.background_sync,
@@ -227,7 +229,10 @@ impl App {
                         self.current_screen = screen;
                     }
                     AppCommand::StartBackgroundSync => {
-                        spawn_update_feeds(self.state.feeds.clone(), self.event_tx.clone());
+                        if !self.state.background_syncing {
+                            self.state.background_syncing = true;
+                            spawn_update_feeds(self.state.feeds.clone(), self.event_tx.clone());
+                        }
                     }
                     AppCommand::Quit => {
                         self.should_quit = true;
@@ -297,7 +302,10 @@ impl App {
                                     self.state.feeds.remove(self.state.selected_feed_index);
                                     self.state.selected_feed_index = 0;
                                 }
-                                Err(err) => println!("Error deleting feed: {} {}", feed.title, err),
+                                Err(err) => {
+                                    self.state.status_message =
+                                        Some(format!("Could not remove {}: {err}", feed.title));
+                                }
                             }
                         }
                     }
@@ -319,18 +327,104 @@ impl App {
                         self.state.feeds.insert(0, feed);
                         self.state.selected_feed_index = 0;
                         self.state.selected_source = FeedSource::Feed(feed_id);
+                        self.state.status_message =
+                            Some(format!("Added feed: {}", self.state.feeds[0].title));
                     }
                     AppEvent::FeedAddFailed(err) => {
-                        println!("{}", err);
+                        self.state.status_message = Some(format!("Could not add feed: {err}"));
                     }
                     AppEvent::BackgroundSyncStarted => {
                         self.state.background_syncing = true;
+                        self.state.status_message = Some("Refreshing feeds…".to_string());
                     }
                     AppEvent::BackgroundSyncFinished => {
                         self.state.background_syncing = false;
                     }
-                    AppEvent::FeedsUpdated(_) => {
+                    AppEvent::FeedsUpdated(updated_ids, mut errors) => {
                         self.state.background_syncing = false;
+                        let selected_item_id = self.state.selected_feed_item_id.clone();
+                        let selected_item_was_in_updated_feed =
+                            selected_item_id.as_ref().is_some_and(|id| {
+                                updated_ids.iter().any(|feed_id| {
+                                    self.state
+                                        .feed_items
+                                        .get(feed_id)
+                                        .is_some_and(|collection| {
+                                            collection.index_map.contains_key(id)
+                                        })
+                                })
+                            });
+                        for feed_id in &updated_ids {
+                            match FeedItem::get_by_feed_id(*feed_id, &self.services.database).await
+                            {
+                                Ok(collection) => {
+                                    if let Some(feed) =
+                                        self.state.feeds.iter_mut().find(|feed| feed.id == *feed_id)
+                                    {
+                                        feed.feed_count = collection.items.len() as i32;
+                                    }
+                                    self.state.feed_items.insert(*feed_id, collection);
+                                }
+                                Err(error) => {
+                                    errors.push(format!("Could not reload feed {feed_id}: {error}"))
+                                }
+                            }
+                        }
+                        if let Ok(favourites) =
+                            FeedItem::get_favourites_id(&self.services.database).await
+                        {
+                            self.state.favourites = favourites;
+                        }
+                        if !updated_ids.is_empty() {
+                            if let Ok(feeds) = Feed::get_all(&self.services.database).await {
+                                for refreshed in feeds {
+                                    if let Some(current) = self
+                                        .state
+                                        .feeds
+                                        .iter_mut()
+                                        .find(|feed| feed.id == refreshed.id)
+                                    {
+                                        current.title = refreshed.title;
+                                        current.subtitle = refreshed.subtitle;
+                                        current.url = refreshed.url;
+                                    }
+                                }
+                            }
+                        }
+                        if selected_item_was_in_updated_feed {
+                            let selected_item_still_exists =
+                                selected_item_id.as_ref().is_some_and(|id| {
+                                    self.state
+                                        .feed_items
+                                        .values()
+                                        .any(|collection| collection.index_map.contains_key(id))
+                                });
+                            if let Some(view_feed) = self.screens.get_mut(&Screens::ViewFeed) {
+                                view_feed.reset();
+                            }
+                            if !selected_item_still_exists {
+                                self.state.selected_feed_item_id = None;
+                                self.current_screen = Screens::Home;
+                            }
+                        }
+                        self.state.status_message = Some(if errors.is_empty() {
+                            format!("Refresh complete: {} feed(s) updated", updated_ids.len())
+                        } else {
+                            let details = errors
+                                .iter()
+                                .take(3)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            let remaining = errors.len().saturating_sub(3);
+                            if remaining == 0 {
+                                format!("Refresh finished with errors: {details}")
+                            } else {
+                                format!(
+                                    "Refresh finished with errors: {details}; and {remaining} more"
+                                )
+                            }
+                        });
                     }
                 }
             }
@@ -351,6 +445,7 @@ impl App {
                 let footer = Footer {
                     current_screen: self.current_screen.clone(),
                     theme: self.config.current_theme,
+                    message: self.state.status_message.as_deref(),
                 };
                 footer.render_ref(footer_area, frame.buffer_mut());
 
@@ -367,6 +462,10 @@ impl App {
             })?;
 
             let event = events.next().unwrap();
+
+            if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press) {
+                self.state.status_message = None;
+            }
 
             match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {

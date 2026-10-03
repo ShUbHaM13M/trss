@@ -220,30 +220,69 @@ impl FeedItem {
         feed_id: i32,
         items: Vec<Item>,
         database: &Database,
-    ) {
-        const DELETE_FEED_ITEM: &str = "DELETE FROM feed_items WHERE feed_id = ?1";
-        let result = database
+    ) -> Result<(), Box<dyn Error>> {
+        let feed_id_string = feed_id.to_string();
+        let incoming = items
+            .iter()
+            .map(|item| FeedItem::get_feed_items_param(item, feed_id_string.clone()))
+            .collect::<Vec<_>>();
+        let incoming_ids = incoming
+            .iter()
+            .map(|params| params[0].clone())
+            .collect::<HashSet<_>>();
+
+        database
             .pool
             .conn(move |conn| {
-                conn.execute_batch("BEGIN TRANSACTION;")?;
-                conn.execute(DELETE_FEED_ITEM, ())?;
-                let feed_id_str = feed_id.to_string();
-                {
-                    let mut stmt = conn.prepare(FEED_ITEM_INSERT)?;
+                use async_sqlite::rusqlite;
 
-                    for item in items {
-                        let params = FeedItem::get_feed_items_param(&item, feed_id_str.clone());
-                        stmt.execute(params)?;
+                conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+                let update_result = (|| -> Result<(), rusqlite::Error> {
+                    let existing_ids = {
+                        let mut stmt =
+                            conn.prepare("SELECT id FROM feed_items WHERE feed_id = ?1")?;
+                        let rows = stmt.query_map([feed_id], |row| row.get::<_, String>(0))?;
+                        rows.collect::<Result<Vec<_>, _>>()?
+                    };
+
+                    {
+                        let mut stmt = conn.prepare(FEED_ITEM_INSERT)?;
+                        for params in &incoming {
+                            stmt.execute((
+                                &params[0], &params[1], &params[2], &params[3], &params[4],
+                                &params[5], &params[6],
+                            ))?;
+                        }
+                    }
+
+                    let mut is_saved = conn.prepare(
+                        "SELECT EXISTS(SELECT 1 FROM favourite_feeds WHERE feed_item_id = ?1) \
+                         OR EXISTS(SELECT 1 FROM readlist WHERE feed_item_id = ?1)",
+                    )?;
+                    let mut delete_item =
+                        conn.prepare("DELETE FROM feed_items WHERE id = ?1 AND feed_id = ?2")?;
+                    for id in existing_ids {
+                        if !incoming_ids.contains(&id) {
+                            let saved: bool = is_saved.query_row([&id], |row| row.get(0))?;
+                            if !saved {
+                                delete_item.execute((&id, feed_id))?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })();
+
+                match update_result {
+                    Ok(()) => conn.execute_batch("COMMIT")?,
+                    Err(error) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        return Err(error);
                     }
                 }
-                conn.execute_batch("COMMIT;")?;
                 Ok(())
             })
-            .await;
-
-        if let Err(e) = result {
-            eprintln!("Error updating feed items: {}", e);
-        }
+            .await?;
+        Ok(())
     }
 
     fn get_feed_items_param(item: &Item, feed_id: String) -> [String; 7] {

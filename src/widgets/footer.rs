@@ -10,9 +10,10 @@ use ratatui::{
 
 use crate::{app::Screens, models::theme::Theme};
 
-pub struct Footer {
+pub struct Footer<'a> {
     pub current_screen: Screens,
     pub theme: Theme,
+    pub message: Option<&'a str>,
 }
 
 #[derive(Clone)]
@@ -48,18 +49,27 @@ lazy_static! {
     };
 }
 
-impl WidgetRef for Footer {
+impl WidgetRef for Footer<'_> {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let container = Block::default()
             .padding(Padding::symmetric(2, 1))
             .bg(self.theme.primary)
             .fg(Color::White);
 
-        let tips = SCREEN_TIPS_MAP.get(&self.current_screen);
-        if tips.is_none() {
+        let inner_area = container.inner(area);
+        if let Some(message) = &self.message {
+            container.render(area, buf);
+            Paragraph::new(*message)
+                .fg(Color::White)
+                .bg(self.theme.primary)
+                .render(inner_area, buf);
             return;
         }
-        let tips = tips.unwrap();
+
+        container.render(area, buf);
+        let Some(tips) = SCREEN_TIPS_MAP.get(&self.current_screen) else {
+            return;
+        };
 
         let parts = Layout::default()
             .direction(Direction::Horizontal)
@@ -69,9 +79,8 @@ impl WidgetRef for Footer {
                     .map(|a| Constraint::Length((a.key.len() + a.label.len() + 3) as u16)),
             )
             .spacing(2)
-            .split(container.inner(area));
+            .split(inner_area);
 
-        container.render(area, buf);
         for (index, part) in parts.iter().enumerate() {
             let current = tips[index].clone();
             let mut text = Text::default();

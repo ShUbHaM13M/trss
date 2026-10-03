@@ -70,11 +70,15 @@ impl Feed {
         Ok(feeds)
     }
 
-    pub async fn update_feed(channel: &Channel, database: &Database) {
+    pub async fn update_feed(
+        feed_id: i32,
+        channel: &Channel,
+        database: &Database,
+    ) -> Result<(), Box<dyn Error>> {
         const FEED_UPDATE: &str = r"
         UPDATE feeds
             SET title = ?1, subtitle = ?2, last_updated = ?3
-        WHERE url = ?4";
+        WHERE id = ?4";
         let title: String = channel.title.clone();
         let description: String = channel.description.clone();
         let last_updated = match channel.last_build_date.clone() {
@@ -84,18 +88,14 @@ impl Feed {
                 local_time.format(DEFAULT_DATE_FORMAT).to_string()
             }
         };
-        let url = channel.link.clone();
-        let result = database
+        database
             .pool
             .conn(move |conn| {
-                conn.execute(FEED_UPDATE, &[&title, &description, &last_updated, &url])
+                conn.execute(FEED_UPDATE, (&title, &description, &last_updated, feed_id))?;
+                Ok(())
             })
-            .await;
-
-        // TODO: Remove after debugging
-        if let Err(result) = result {
-            println!("Error updating feed {}", result);
-        }
+            .await?;
+        Ok(())
     }
 
     pub async fn add(
@@ -109,7 +109,7 @@ impl Feed {
         VALUES (?1, ?2, ?3, ?4, ?5)
         RETURNING id;
         ";
-        let response = get(url.clone()).await?;
+        let response = get(url.clone()).await?.error_for_status()?;
         let body = response.bytes().await?;
         let channel = Channel::read_from(&body[..])?;
 
@@ -181,48 +181,62 @@ pub fn spawn_update_feeds(feeds: Vec<Feed>, sender: tokio::sync::mpsc::Unbounded
         let database = match Database::init().await {
             Ok(db) => db,
             Err(e) => {
-                println!("Failed to initialize database: {}", e);
+                let _ = sender.send(AppEvent::FeedsUpdated(
+                    Vec::new(),
+                    vec![format!("Could not open the feed database: {e}")],
+                ));
                 return;
             }
         };
 
         let mut updated_feeds = Vec::new();
+        let mut errors = Vec::new();
 
         for feed in feeds {
             if feed.url.is_empty() {
                 continue;
             }
 
-            match get(&feed.url).await {
-                Ok(response) => match response.bytes().await {
-                    Ok(body) => {
-                        if let Ok(channel) = Channel::read_from(&body[..]) {
-                            let feed_item_count =
-                                FeedItem::get_feed_item_count(feed.id, &database).await;
-                            if feed_item_count != channel.items.len() as i32 {
-                                let _ = Feed::update_feed(&channel, &database).await;
+            let result = async {
+                let response = get(&feed.url).await?.error_for_status()?;
+                let body = response.bytes().await?;
+                let channel = Channel::read_from(&body[..])?;
+                Ok::<Channel, Box<dyn Error + Send + Sync>>(channel)
+            }
+            .await;
 
-                                let _ = FeedItem::update_feed_items_from_channel(
-                                    feed.id,
-                                    channel.items,
-                                    &database,
-                                )
-                                .await;
+            match result {
+                Ok(channel) => {
+                    let item_update_error = match FeedItem::update_feed_items_from_channel(
+                        feed.id,
+                        channel.items.clone(),
+                        &database,
+                    )
+                    .await
+                    {
+                        Ok(()) => None,
+                        Err(error) => Some(error.to_string()),
+                    };
+                    if let Some(error) = item_update_error {
+                        errors.push(format!(
+                            "{}: could not update articles: {error}",
+                            feed.title
+                        ));
+                        continue;
+                    }
 
-                                updated_feeds.push(feed.id);
-                            }
-                        }
+                    updated_feeds.push(feed.id);
+                    if let Err(error) = Feed::update_feed(feed.id, &channel, &database).await {
+                        errors.push(format!(
+                            "{}: articles updated, metadata update failed: {error}",
+                            feed.title
+                        ));
                     }
-                    Err(_) => {
-                        println!("Failed to read body for {}", feed.url);
-                    }
-                },
-                Err(e) => {
-                    println!("Failed to fetch {} {}", feed.url, e);
                 }
+                Err(error) => errors.push(format!("{}: {error}", feed.title)),
             }
         }
 
-        let _ = sender.send(AppEvent::FeedsUpdated(updated_feeds));
+        let _ = sender.send(AppEvent::FeedsUpdated(updated_feeds, errors));
     });
 }
