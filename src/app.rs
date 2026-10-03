@@ -176,7 +176,9 @@ impl App {
             },
             state: AppState {
                 feed_items,
-                selected_source: FeedSource::Feed(feeds.first().unwrap().id),
+                // Feed id 0 is a harmless empty-state selection until the user adds
+                // their first feed (database feed ids start at 1).
+                selected_source: FeedSource::Feed(feeds.first().map_or(0, |feed| feed.id)),
                 feeds,
                 selected_feed_index: 0,
                 selected_feed_item_id: None,
@@ -247,12 +249,17 @@ impl App {
                                     self.state.readlist.iter().nth(index).cloned();
                             }
                             FeedSource::Feed(id) => {
-                                let feed_collection = self.state.feed_items.get_mut(&id).unwrap();
-                                let feed_item = &feed_collection.items[index];
-                                self.state.selected_feed_item_id = Some(feed_item.id.clone());
+                                self.state.selected_feed_item_id = self
+                                    .state
+                                    .feed_items
+                                    .get(&id)
+                                    .and_then(|collection| collection.items.get(index))
+                                    .map(|item| item.id.clone());
                             }
                         }
-                        self.current_screen = Screens::ViewFeed;
+                        if self.state.selected_feed_item_id.is_some() {
+                            self.current_screen = Screens::ViewFeed;
+                        }
                     }
                     AppCommand::ToggleFeedItemFavourite(feed_item_id) => {
                         let is_favourite = FeedItem::toggle_favourite(
@@ -301,14 +308,17 @@ impl App {
             while let Ok(event) = self.event_rx.try_recv() {
                 match event {
                     AppEvent::FeedAdded(feed) => {
+                        let feed_id = feed.id;
                         self.state.feed_items.insert(
-                            feed.id,
-                            match FeedItem::get_by_feed_id(feed.id, &self.services.database).await {
+                            feed_id,
+                            match FeedItem::get_by_feed_id(feed_id, &self.services.database).await {
                                 Ok(item) => item,
                                 Err(_) => FeedItemCollection::new(),
                             },
                         );
                         self.state.feeds.insert(0, feed);
+                        self.state.selected_feed_index = 0;
+                        self.state.selected_source = FeedSource::Feed(feed_id);
                     }
                     AppEvent::FeedAddFailed(err) => {
                         println!("{}", err);

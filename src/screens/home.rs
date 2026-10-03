@@ -192,18 +192,22 @@ impl Screen for Home {
             let feed_list_view = FeedListView {
                 focused: false,
                 title: match ctx.state.selected_source {
-                    FeedSource::Feed(_) => {
-                        let feed = &ctx.state.feeds[ctx.state.selected_feed_index];
-                        &feed.title.as_str()
-                    }
+                    FeedSource::Feed(_) => ctx
+                        .state
+                        .feeds
+                        .get(ctx.state.selected_feed_index)
+                        .map_or("No feeds yet", |feed| feed.title.as_str()),
                     FeedSource::Favourites => "Favourites",
                     FeedSource::Readlist => "Readlist",
                 },
                 subtitle: match ctx.state.selected_source {
-                    FeedSource::Feed(_) => {
-                        let feed = &ctx.state.feeds[ctx.state.selected_feed_index];
-                        &feed.subtitle.as_str()
-                    }
+                    FeedSource::Feed(_) => ctx
+                        .state
+                        .feeds
+                        .get(ctx.state.selected_feed_index)
+                        .map_or("Press 'a' to add your first RSS feed", |feed| {
+                            feed.subtitle.as_str()
+                        }),
                     FeedSource::Favourites => "All your favourite feeds",
                     FeedSource::Readlist => "All your articles from readlist",
                 },
@@ -298,9 +302,6 @@ impl Screen for Home {
                                     self.state.new_feed_url = String::new();
                                     self.state.focused_widget = FocusedWidget::FeedList;
                                     let _ = ctx.command_tx.send(AppCommand::CloseAddFeedPopup);
-                                    let _ = ctx
-                                        .command_tx
-                                        .send(AppCommand::SelectSource(FeedSource::Feed(0)));
                                 }
                             }
                             KeyCode::Tab => {
@@ -417,6 +418,9 @@ impl Screen for Home {
                                     .send(AppCommand::SelectSource(FeedSource::Feed(feed_id)));
                             }
                             FocusedWidget::FeedItems => {
+                                if ctx.state.feeds.is_empty() {
+                                    return;
+                                }
                                 self.state.selected_feed_item_index =
                                     match self.state.selected_feed_item_index {
                                         Some(index) => {
@@ -437,9 +441,10 @@ impl Screen for Home {
                                 let next_source = match ctx.state.selected_source {
                                     FeedSource::Feed(_) => FeedSource::Favourites,
                                     FeedSource::Favourites => FeedSource::Readlist,
-                                    FeedSource::Readlist => {
-                                        FeedSource::Feed(ctx.state.feeds.first().unwrap().id)
-                                    }
+                                    FeedSource::Readlist => match ctx.state.feeds.first() {
+                                        Some(feed) => FeedSource::Feed(feed.id),
+                                        None => FeedSource::Favourites,
+                                    },
                                 };
                                 let _ = ctx.command_tx.send(AppCommand::SelectSource(next_source));
                                 self.filter_feeds(&ctx.state.feeds, &ctx.state.selected_source);
@@ -451,9 +456,10 @@ impl Screen for Home {
                             FocusedWidget::Categories => {
                                 let next_source = match ctx.state.selected_source {
                                     FeedSource::Feed(_) => FeedSource::Readlist,
-                                    FeedSource::Favourites => {
-                                        FeedSource::Feed(ctx.state.feeds.first().unwrap().id)
-                                    }
+                                    FeedSource::Favourites => match ctx.state.feeds.first() {
+                                        Some(feed) => FeedSource::Feed(feed.id),
+                                        None => FeedSource::Readlist,
+                                    },
                                     FeedSource::Readlist => FeedSource::Favourites,
                                 };
                                 let _ = ctx.command_tx.send(AppCommand::SelectSource(next_source));
@@ -475,6 +481,9 @@ impl Screen for Home {
                                     .send(AppCommand::SelectSource(FeedSource::Feed(feed_id)));
                             }
                             FocusedWidget::FeedItems => {
+                                if ctx.state.feeds.is_empty() {
+                                    return;
+                                }
                                 let feed = &ctx.state.feeds[ctx.state.selected_feed_index];
                                 let collection = &ctx.state.feed_items[&feed.id];
                                 let item_count = collection.items.len();
