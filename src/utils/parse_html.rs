@@ -46,7 +46,9 @@ lazy_static! {
 }
 
 pub fn parse_html(html: String) -> Vec<ParagraphData> {
-    let dom = tl::parse(&html, tl::ParserOptions::default()).unwrap();
+    let Ok(dom) = tl::parse(&html, tl::ParserOptions::default()) else {
+        return vec![ParagraphData::new(html, None)];
+    };
     let parser = dom.parser();
 
     let mut text = Vec::new();
@@ -71,6 +73,10 @@ fn parse_inline<'a>(node: &Node, parser: &Parser) -> Vec<Span<'a>> {
         Node::Tag(tag) => {
             let tag_name = tag.name().as_utf8_str();
             let tag_name = tag_name.as_ref();
+
+            if matches!(tag_name, "script" | "style") {
+                return vec![];
+            }
 
             let mut spans = Vec::new();
             for child in tag.children().top().iter().filter_map(|h| h.get(parser)) {
@@ -301,6 +307,8 @@ fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData> {
                         .border_type(BorderType::Thick);
                     vec![ParagraphData::new(Span::from(""), Some(block))]
                 }
+                "br" => vec![ParagraphData::new(Span::raw("\n"), None)],
+                "script" | "style" => vec![],
                 "pre" | "video" | "source" => {
                     let mut children_widgets = Vec::new();
                     for child in tag.children().top().iter().filter_map(|h| h.get(parser)) {
@@ -309,7 +317,15 @@ fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData> {
                     children_widgets
                 }
                 _ => {
-                    unimplemented!("{} not implemented", tag_name);
+                    let mut children_widgets = Vec::new();
+                    for child in tag.children().top().iter().filter_map(|h| h.get(parser)) {
+                        children_widgets.extend(parse_node(child, parser));
+                    }
+                    if children_widgets.is_empty() && !inner_text.trim().is_empty() {
+                        vec![ParagraphData::new(inner_text, None)]
+                    } else {
+                        children_widgets
+                    }
                 }
             }
         }
