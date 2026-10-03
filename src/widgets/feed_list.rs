@@ -9,7 +9,7 @@ use ratatui::{
     },
 };
 
-use crate::models::{feed::Feed, feed_item::FeedItem, theme::Theme};
+use crate::models::{feed_item::FeedItem, theme::Theme};
 
 pub struct FeedListView<'a> {
     pub focused: bool,

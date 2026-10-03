@@ -12,11 +12,14 @@ use crate::{
 };
 use ratatui::{
     DefaultTerminal,
-    crossterm::event::{KeyCode, KeyEventKind},
+    crossterm::event::{KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Direction, Layout},
     widgets::WidgetRef,
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+};
 use tokio::sync::mpsc;
 
 use crate::event::EventHandler;
@@ -141,18 +144,9 @@ pub struct App {
 }
 
 impl App {
-    pub async fn new() -> Self {
-        let database = Database::init().await;
-        if let Err(err) = database {
-            eprintln!("Failed to initialize database: {}", err);
-            std::process::exit(1);
-        }
-        let database = database.unwrap();
-
-        let mut feeds: Vec<Feed> = Vec::new();
-        if let Ok(f) = Feed::get_all(&database).await {
-            feeds = f;
-        }
+    pub async fn new() -> Result<Self, Box<dyn Error>> {
+        let database = Database::init().await?;
+        let mut feeds = Feed::get_all(&database).await?;
 
         let mut feed_items: HashMap<i32, FeedItemCollection> = feeds
             .iter()
@@ -161,36 +155,26 @@ impl App {
 
         for feed in &mut feeds {
             let feed_id = feed.id;
-            match FeedItem::get_by_feed_id(feed_id, &database).await {
-                Ok(feed_item) => {
-                    let count = feed_item.items.len() as i32;
-                    feed.feed_count = count;
-                    feed_items.insert(feed_id, feed_item);
-                }
-                Err(e) => panic!("Failed to fetch feed items for feed id {}", e),
-            };
+            let feed_item = FeedItem::get_by_feed_id(feed_id, &database).await?;
+            feed.feed_count = feed_item.items.len() as i32;
+            feed_items.insert(feed_id, feed_item);
         }
 
-        let favourites = match FeedItem::get_favourites_id(&database).await {
-            Ok(favourites) => favourites,
-            Err(_) => HashSet::new(),
-        };
-        let readlist = FeedItem::get_readlist_ids(&database)
-            .await
-            .unwrap_or_default();
+        let favourites = FeedItem::get_favourites_id(&database).await?;
+        let readlist = FeedItem::get_readlist_ids(&database).await?;
 
         let mut screens: HashMap<Screens, Box<dyn Screen>> = HashMap::new();
         screens.insert(
             Screens::Home,
             Box::new(Home::new(database.clone(), &feeds).await),
         );
-        screens.insert(Screens::ViewFeed, Box::new(ViewFeed::new(database.clone())));
+        screens.insert(Screens::ViewFeed, Box::new(ViewFeed::new()));
 
         let mut themes = Theme::get_all();
         let user_themes = Theme::get_user_themes().unwrap_or_default();
         themes.extend(user_themes);
 
-        let user_settings = Settings::get_settings(&database).await;
+        let user_settings = Settings::get_settings(&database).await?;
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
 
@@ -198,7 +182,7 @@ impl App {
             spawn_update_feeds(feeds.clone(), event_tx.clone());
         }
 
-        App {
+        Ok(App {
             current_screen: Screens::Home,
             should_quit: false,
 
@@ -236,7 +220,7 @@ impl App {
 
             command_tx,
             command_rx,
-        }
+        })
     }
 
     pub async fn run(
@@ -349,20 +333,30 @@ impl App {
                     }
                     AppCommand::DeleteSelectedFeed => {
                         if let Some(feed) = self.state.feeds.get(self.state.selected_feed_index) {
-                            match Feed::delete(feed.id, &self.services.database).await {
+                            let feed_id = feed.id;
+                            let feed_title = feed.title.clone();
+                            match Feed::delete(feed_id, &self.services.database).await {
                                 Ok(_) => {
-                                    self.state.feed_items.remove(&feed.id);
+                                    self.state.feed_items.remove(&feed_id);
                                     self.state.feeds.remove(self.state.selected_feed_index);
                                     self.state.selected_feed_index = 0;
+                                    self.state.selected_source = FeedSource::Feed(
+                                        self.state.feeds.first().map_or(0, |feed| feed.id),
+                                    );
+                                    self.state.status_message =
+                                        Some(format!("Removed feed: {feed_title}"));
                                 }
                                 Err(err) => {
                                     self.state.status_message =
-                                        Some(format!("Could not remove {}: {err}", feed.title));
+                                        Some(format!("Could not remove {feed_title}: {err}"));
                                 }
                             }
                         }
                     }
                 }
+            }
+            if self.should_quit {
+                break;
             }
 
             // Draining Events
@@ -370,18 +364,26 @@ impl App {
                 match event {
                     AppEvent::FeedAdded(feed) => {
                         let feed_id = feed.id;
-                        self.state.feed_items.insert(
+                        let (items, load_error) = match FeedItem::get_by_feed_id(
                             feed_id,
-                            match FeedItem::get_by_feed_id(feed_id, &self.services.database).await {
-                                Ok(item) => item,
-                                Err(_) => FeedItemCollection::new(),
-                            },
-                        );
+                            &self.services.database,
+                        )
+                        .await
+                        {
+                            Ok(items) => (items, None),
+                            Err(error) => (FeedItemCollection::new(), Some(error.to_string())),
+                        };
+                        self.state.feed_items.insert(feed_id, items);
+                        let title = feed.title.clone();
                         self.state.feeds.insert(0, feed);
                         self.state.selected_feed_index = 0;
                         self.state.selected_source = FeedSource::Feed(feed_id);
-                        self.state.status_message =
-                            Some(format!("Added feed: {}", self.state.feeds[0].title));
+                        self.state.status_message = Some(match load_error {
+                            Some(error) => {
+                                format!("Added {title}, but could not load its articles: {error}")
+                            }
+                            None => format!("Added feed: {title}"),
+                        });
                     }
                     AppEvent::FeedAddFailed(err) => {
                         self.state.status_message = Some(format!("Could not add feed: {err}"));
@@ -514,7 +516,10 @@ impl App {
                 }
             })?;
 
-            let event = events.next().unwrap();
+            let event = events.next()?;
+            if let Event::Error(message) = &event {
+                return Err(std::io::Error::other(message.clone()).into());
+            }
 
             if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press) {
                 self.state.status_message = None;
@@ -522,19 +527,12 @@ impl App {
 
             match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('t') => {
+                    KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         if self.state.overlay == Overlay::None {
                             self.state.overlay = Overlay::ThemeSelector;
                             continue;
                         }
                     }
-                    KeyCode::Esc => match self.state.overlay {
-                        Overlay::None => {
-                            self.should_quit = true;
-                            continue;
-                        }
-                        _ => {}
-                    },
                     _ => {}
                 },
                 _ => {}
@@ -586,40 +584,52 @@ impl App {
                             self.state.overlay = Overlay::None;
                         }
                         KeyCode::Enter => {
-                            let _ = Settings::update_setting(
+                            match Settings::update_setting(
                                 &self.services.database,
                                 String::from("theme"),
                                 self.config.current_theme_name.clone(),
                             )
-                            .await;
+                            .await
+                            {
+                                Ok(()) => {
+                                    self.state.status_message = Some(format!(
+                                        "Theme set to {}",
+                                        self.config.current_theme_name
+                                    ));
+                                }
+                                Err(error) => {
+                                    self.state.status_message =
+                                        Some(format!("Could not save theme: {error}"));
+                                }
+                            }
                             self.state.overlay = Overlay::None;
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
+                            if themes.is_empty() {
+                                return;
+                            }
                             let index = themes
                                 .iter()
-                                .position(|s| *s == self.config.current_theme_name);
-                            if index.is_none() {
-                                self.config.current_theme_name =
-                                    themes.get(index.unwrap()).unwrap().clone();
-                            } else {
-                                self.config.current_theme_name = themes
-                                    .get(index.unwrap().wrapping_add(1) % themes.len())
-                                    .unwrap()
-                                    .clone();
-                            }
+                                .position(|s| *s == self.config.current_theme_name)
+                                .unwrap_or(0);
+                            self.config.current_theme_name =
+                                themes[(index + 1) % themes.len()].clone();
                             self.config.update_theme();
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
-                            let mut index = themes
+                            if themes.is_empty() {
+                                return;
+                            }
+                            let index = themes
                                 .iter()
                                 .position(|s| *s == self.config.current_theme_name)
-                                .unwrap_or_default();
-                            index = if index == 0 {
+                                .unwrap_or(0);
+                            let index = if index == 0 {
                                 themes.len() - 1
                             } else {
                                 index - 1
                             };
-                            self.config.current_theme_name = themes.get(index).unwrap().clone();
+                            self.config.current_theme_name = themes[index].clone();
                             self.config.update_theme();
                         }
                         _ => {}

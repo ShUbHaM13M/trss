@@ -1,28 +1,25 @@
 use ratatui::{
-    crossterm::event::{KeyCode, KeyEventKind, KeyModifiers},
+    crossterm::event::{KeyCode, KeyEventKind},
     layout::{Constraint, Direction, Flex, Layout},
     style::{Style, Stylize},
     widgets::{Block, Padding, Paragraph, Widget, Wrap},
 };
 
 use crate::{
-    app::{AppCommand, Screens},
+    app::{AppCommand, AppState, Screens},
     event::Event,
-    models::db::Database,
     screens::{Screen, ScreenContext, ScreenContextMut},
     utils::parse_html::{ParagraphList, parse_html},
 };
 
 pub struct ViewFeed {
-    database: Database,
     content_list: ParagraphList,
     last_feed_id: Option<String>,
 }
 
 impl ViewFeed {
-    pub fn new(database: Database) -> Self {
+    pub fn new() -> Self {
         Self {
-            database,
             content_list: ParagraphList::new(vec![]),
             last_feed_id: None,
         }
@@ -60,6 +57,39 @@ impl ViewFeed {
             self.content_list.reset_scroll();
             self.last_feed_id = Some(selected_id.clone());
         }
+    }
+
+    fn move_article(
+        state: &AppState,
+        command_tx: &tokio::sync::mpsc::UnboundedSender<AppCommand>,
+        forward: bool,
+    ) {
+        let Some(current_id) = state.selected_feed_item_id.as_ref() else {
+            return;
+        };
+        let mut items = state.items_for_selected_source();
+        if !items.iter().any(|item| &item.id == current_id) {
+            items = state
+                .feed_items
+                .values()
+                .flat_map(|collection| collection.items.iter().cloned())
+                .collect();
+            items.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
+        }
+        let Some(index) = items.iter().position(|item| &item.id == current_id) else {
+            return;
+        };
+        if items.is_empty() {
+            return;
+        }
+        let next = if forward {
+            (index + 1) % items.len()
+        } else if index == 0 {
+            items.len() - 1
+        } else {
+            index - 1
+        };
+        let _ = command_tx.send(AppCommand::OpenFeed(items[next].id.clone()));
     }
 }
 
@@ -155,7 +185,11 @@ impl Screen for ViewFeed {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 match key.code {
-                    KeyCode::Char('s') => {
+                    KeyCode::Esc
+                    | KeyCode::Backspace
+                    | KeyCode::Left
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('s') => {
                         let _ = ctx
                             .command_tx
                             .send(AppCommand::Navigate(Screens::Home, None));
@@ -163,15 +197,28 @@ impl Screen for ViewFeed {
                     KeyCode::Char('j') | KeyCode::Down => {
                         self.content_list.scroll_down();
                     }
+                    KeyCode::PageDown | KeyCode::Char(' ') => {
+                        self.content_list.scroll_by(20);
+                    }
                     KeyCode::Char('k') | KeyCode::Up => {
                         self.content_list.scroll_up();
                     }
-                    KeyCode::Char('g') => {
-                        if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            self.content_list.scroll_bottom();
-                        } else {
-                            self.content_list.reset_scroll();
+                    KeyCode::PageUp => {
+                        for _ in 0..20 {
+                            self.content_list.scroll_up();
                         }
+                    }
+                    KeyCode::Home | KeyCode::Char('g') => {
+                        self.content_list.reset_scroll();
+                    }
+                    KeyCode::End | KeyCode::Char('G') => {
+                        self.content_list.scroll_bottom();
+                    }
+                    KeyCode::Char('n') => {
+                        Self::move_article(ctx.state, &ctx.command_tx, true);
+                    }
+                    KeyCode::Char('p') => {
+                        Self::move_article(ctx.state, &ctx.command_tx, false);
                     }
                     KeyCode::F(1) | KeyCode::Char('f') => {
                         if let Some(id) = ctx.state.selected_feed_item_id.clone() {

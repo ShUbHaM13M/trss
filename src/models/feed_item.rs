@@ -136,25 +136,6 @@ impl FeedItem {
         Ok(feed_items)
     }
 
-    pub async fn get_feed_item_count(feed_id: i32, database: &Database) -> i32 {
-        match database
-            .pool
-            .conn(move |conn| {
-                let mut stmt =
-                    conn.prepare("SELECT COUNT(*) FROM feed_items WHERE feed_id = ?1")?;
-                let row = stmt.query_row([feed_id], |row| row.get(FeedItemFields::Id as usize))?;
-                Ok(row)
-            })
-            .await
-        {
-            Ok(count) => count,
-            Err(err) => {
-                println!("Error: {}", err);
-                0
-            }
-        }
-    }
-
     pub async fn get_favourites_id(database: &Database) -> Result<HashSet<String>, Box<dyn Error>> {
         let feed_items = database
             .pool
@@ -189,31 +170,6 @@ impl FeedItem {
             })
             .await?;
         Ok(ids)
-    }
-
-    async fn get_read_list_items(database: &Database) -> Result<Vec<Self>, Box<dyn Error>> {
-        let feed_items = database
-            .pool
-            .conn(move |conn| {
-                let mut stmt = conn.prepare(
-                    r"
-                            SELECT FI.id, FI.feed_id, FI.link, FI.title, FI.summary, FI.content
-                            FROM readlist R
-                            JOIN feed_items FI ON R.feed_item_id = FI.id
-                       ",
-                )?;
-                let rows = stmt.query_map([], |row| FeedItem::from_row(row))?;
-                let mut feed_items: Vec<Self> = vec![];
-                for row in rows {
-                    let mut feed_item = row?;
-                    feed_item.id = String::from("readlist");
-                    feed_items.push(feed_item);
-                }
-                Ok(feed_items)
-            })
-            .await?;
-
-        Ok(feed_items)
     }
 
     pub async fn get_feed_items_count(database: &Database) -> Result<i32, Box<dyn Error>> {

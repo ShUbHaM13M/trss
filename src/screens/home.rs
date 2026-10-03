@@ -31,6 +31,7 @@ pub enum FocusedWidget {
 #[derive(Clone)]
 pub struct HomeState {
     pub selected_feed_item_index: Option<usize>,
+    pending_g: bool,
     // pub selected_navigation_index: usize,
     pub focused_widget: FocusedWidget,
     pub filtered_feeds: Vec<Feed>,
@@ -57,6 +58,7 @@ impl Home {
         let state = HomeState {
             // selected_navigation_index: 0,
             selected_feed_item_index: None,
+            pending_g: false,
             focused_widget: FocusedWidget::FeedList,
             filtered_feeds: feeds
                 .iter()
@@ -134,6 +136,86 @@ impl Home {
             });
         }
         items
+    }
+
+    fn move_selection_to_edge(&mut self, ctx: &ScreenContextMut, bottom: bool) {
+        match self.state.focused_widget {
+            FocusedWidget::FeedList => {
+                if self.state.filtered_feeds.is_empty() {
+                    return;
+                }
+                let index = if bottom {
+                    self.state.filtered_feeds.len() - 1
+                } else {
+                    0
+                };
+                let feed_id = self.state.filtered_feeds[index].id;
+                let _ = ctx
+                    .command_tx
+                    .send(AppCommand::SelectSource(FeedSource::Feed(feed_id)));
+                self.state.selected_feed_item_index = None;
+                self.state.focused_widget = FocusedWidget::FeedList;
+            }
+            FocusedWidget::FeedItems => {
+                let count = self.visible_items(ctx.state).len();
+                self.state.selected_feed_item_index = if count == 0 {
+                    None
+                } else if bottom {
+                    Some(count - 1)
+                } else {
+                    Some(0)
+                };
+            }
+            FocusedWidget::Categories => {
+                let source = if bottom {
+                    FeedSource::Readlist
+                } else if let Some(feed) = ctx.state.feeds.first() {
+                    FeedSource::Feed(feed.id)
+                } else {
+                    FeedSource::Favourites
+                };
+                let _ = ctx.command_tx.send(AppCommand::SelectSource(source));
+            }
+            FocusedWidget::Search | FocusedWidget::AddFeed => {}
+        }
+    }
+
+    fn move_selection_by(&mut self, ctx: &ScreenContextMut, offset: isize) {
+        match self.state.focused_widget {
+            FocusedWidget::FeedItems => {
+                let count = self.visible_items(ctx.state).len();
+                if count == 0 {
+                    self.state.selected_feed_item_index = None;
+                    return;
+                }
+                let current = self.state.selected_feed_item_index.unwrap_or(0) as isize;
+                let last = count.saturating_sub(1) as isize;
+                self.state.selected_feed_item_index =
+                    Some((current + offset).clamp(0, last) as usize);
+            }
+            FocusedWidget::FeedList => {
+                let count = self.state.filtered_feeds.len();
+                if count == 0 {
+                    return;
+                }
+                let current = match ctx.state.selected_source {
+                    FeedSource::Feed(feed_id) => self
+                        .state
+                        .filtered_feeds
+                        .iter()
+                        .position(|feed| feed.id == feed_id)
+                        .unwrap_or(0),
+                    _ => 0,
+                } as isize;
+                let last = count.saturating_sub(1) as isize;
+                let index = (current + offset).clamp(0, last) as usize;
+                let feed_id = self.state.filtered_feeds[index].id;
+                let _ = ctx
+                    .command_tx
+                    .send(AppCommand::SelectSource(FeedSource::Feed(feed_id)));
+            }
+            _ => {}
+        }
     }
 
     fn add_feed(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
@@ -304,6 +386,9 @@ impl Screen for Home {
                             KeyCode::Enter => {
                                 self.state.focused_widget = FocusedWidget::FeedItems;
                             }
+                            KeyCode::Esc => {
+                                self.state.focused_widget = FocusedWidget::FeedItems;
+                            }
                             _ => {}
                         }
                         self.state.selected_feed_item_index =
@@ -367,7 +452,29 @@ impl Screen for Home {
                         return;
                     }
 
+                    if self.state.pending_g && key.code == KeyCode::Char('g') {
+                        self.state.pending_g = false;
+                        self.move_selection_to_edge(ctx, false);
+                        return;
+                    }
+                    self.state.pending_g = key.code == KeyCode::Char('g');
+
                     match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => {
+                            let _ = ctx.command_tx.send(AppCommand::Quit);
+                        }
+                        KeyCode::Char('G') => {
+                            self.move_selection_to_edge(ctx, true);
+                        }
+                        KeyCode::Char('g') => {}
+                        KeyCode::PageDown => self.move_selection_by(ctx, 10),
+                        KeyCode::PageUp => self.move_selection_by(ctx, -10),
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.move_selection_by(ctx, 10)
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.move_selection_by(ctx, -10)
+                        }
                         KeyCode::Enter => match self.state.focused_widget {
                             FocusedWidget::FeedList => {
                                 self.state.focused_widget = FocusedWidget::FeedItems;
@@ -407,28 +514,56 @@ impl Screen for Home {
                                 }
                             }
                         }
-                        KeyCode::Left | KeyCode::Right => {
-                            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                                if self.state.focused_widget == FocusedWidget::FeedList {
-                                    self.state.focused_widget = FocusedWidget::FeedItems
-                                } else {
-                                    self.state.focused_widget = FocusedWidget::FeedList
+                        KeyCode::Left | KeyCode::Right
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            if self.state.focused_widget == FocusedWidget::FeedList {
+                                self.state.focused_widget = FocusedWidget::FeedItems
+                            } else {
+                                self.state.focused_widget = FocusedWidget::FeedList
+                            }
+                        }
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            if self.show_sidebar {
+                                self.state.focused_widget = match self.state.focused_widget {
+                                    FocusedWidget::FeedItems => FocusedWidget::FeedList,
+                                    FocusedWidget::FeedList => FocusedWidget::Categories,
+                                    _ => FocusedWidget::Categories,
+                                };
+                            }
+                        }
+                        KeyCode::Right | KeyCode::Char('l') => {
+                            self.state.focused_widget = match self.state.focused_widget {
+                                FocusedWidget::Categories => match ctx.state.selected_source {
+                                    FeedSource::Feed(_) if self.show_sidebar => {
+                                        FocusedWidget::FeedList
+                                    }
+                                    _ => FocusedWidget::FeedItems,
+                                },
+                                FocusedWidget::FeedList => FocusedWidget::FeedItems,
+                                _ => FocusedWidget::FeedItems,
+                            };
+                        }
+                        KeyCode::Tab => {
+                            self.state.focused_widget = match self.state.focused_widget {
+                                FocusedWidget::Categories if self.show_sidebar => {
+                                    FocusedWidget::FeedList
                                 }
-                            }
+                                FocusedWidget::Categories => FocusedWidget::FeedItems,
+                                FocusedWidget::FeedList => FocusedWidget::FeedItems,
+                                _ if self.show_sidebar => FocusedWidget::Categories,
+                                _ => FocusedWidget::FeedItems,
+                            };
                         }
-                        KeyCode::Char('h') => {
-                            if self.state.focused_widget == FocusedWidget::FeedList {
-                                self.state.focused_widget = FocusedWidget::FeedItems
-                            } else {
-                                self.state.focused_widget = FocusedWidget::FeedList
-                            }
-                        }
-                        KeyCode::Char('l') => {
-                            if self.state.focused_widget == FocusedWidget::FeedList {
-                                self.state.focused_widget = FocusedWidget::FeedItems
-                            } else {
-                                self.state.focused_widget = FocusedWidget::FeedList
-                            }
+                        KeyCode::BackTab => {
+                            self.state.focused_widget = match self.state.focused_widget {
+                                FocusedWidget::FeedItems if self.show_sidebar => {
+                                    FocusedWidget::FeedList
+                                }
+                                FocusedWidget::FeedItems => FocusedWidget::Categories,
+                                FocusedWidget::FeedList => FocusedWidget::Categories,
+                                _ => FocusedWidget::FeedItems,
+                            };
                         }
                         KeyCode::Char('n') => {
                             self.state.focused_widget =
@@ -561,6 +696,7 @@ impl Screen for Home {
                 }
             }
             Event::Mouse(_) => {}
+            Event::Error(_) => {}
             Event::Resize(_, _) => {} // TODO: Set sidebar = false if the screen is too small
         }
     }

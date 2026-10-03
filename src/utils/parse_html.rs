@@ -8,7 +8,7 @@ use ratatui::widgets::{
 };
 use tl::{Node, Parser};
 
-use std::collections::HashMap;
+use std::{cell::Cell, collections::HashMap};
 
 use crate::models::theme::Theme;
 
@@ -379,8 +379,8 @@ impl ParagraphData {
 
 pub struct ParagraphList {
     pub paragraphs: Vec<ParagraphData>,
-    heights: Vec<u16>,
     scroll: usize,
+    max_scroll: Cell<usize>,
     // content_height: usize,
 }
 
@@ -388,58 +388,36 @@ impl ParagraphList {
     pub fn new(paragraphs: Vec<ParagraphData>) -> Self {
         Self {
             paragraphs,
-            heights: vec![],
             scroll: 0,
+            max_scroll: Cell::new(0),
         }
     }
     pub fn set_paragraphs(&mut self, paragraphs: Vec<ParagraphData>) {
-        self.heights = paragraphs
-            .iter()
-            .map(|p| (p.text.lines.len() as u16).max(1))
-            .collect();
         self.paragraphs = paragraphs;
         self.scroll = 0;
     }
     pub fn scroll_down(&mut self) {
-        self.scroll = self.scroll.saturating_add(1);
+        self.scroll = self.scroll.saturating_add(1).min(self.max_scroll.get());
+    }
+    pub fn scroll_by(&mut self, lines: usize) {
+        self.scroll = self.scroll.saturating_add(lines).min(self.max_scroll.get());
     }
     pub fn scroll_up(&mut self) {
         self.scroll = self.scroll.saturating_sub(1);
     }
     pub fn scroll_bottom(&mut self) {
-        // TODO: Need to find a way to scroll to bottom
-        // self.scroll = self.scroll.saturating_add();
+        self.scroll = self.max_scroll.get();
     }
     pub fn reset_scroll(&mut self) {
         self.scroll = 0;
-    }
-    fn estimate_paragraph_height(p: &ParagraphData, area_width: u16) -> usize {
-        let mut lines = p
-            .text
-            .lines
-            .iter()
-            .map(|line| {
-                let w = line.width();
-                (w as f32 / area_width as f32).ceil() as usize
-            })
-            .sum::<usize>();
-
-        if p.block.is_some() {
-            lines += 2;
-        }
-
-        lines
     }
     fn measure_text_lines(text: &Text<'static>, width: u16) -> u16 {
         if width == 0 {
             return 0;
         }
         let mut lines = 0usize;
-        for line in text.lines.clone() {
-            let mut len = 0usize;
-            for span in line.iter() {
-                len += span.content.len();
-            }
+        for line in &text.lines {
+            let len = line.width();
             let wraps = (len + (width as usize).saturating_sub(1)) / width as usize;
             lines = lines.saturating_add(std::cmp::max(1, wraps));
         }
@@ -456,7 +434,19 @@ impl ParagraphList {
             return;
         }
 
-        let mut lines_to_skip = self.scroll as u32;
+        let content_height = self
+            .paragraphs
+            .iter()
+            .map(|paragraph| {
+                Self::measure_text_lines(&paragraph.text, width) as usize
+                    + Self::block_vertical_extra(&paragraph.block) as usize
+            })
+            .sum::<usize>();
+        let max_scroll = content_height.saturating_sub(area.height as usize);
+        self.max_scroll.set(max_scroll);
+        let scroll = self.scroll.min(max_scroll);
+
+        let mut lines_to_skip = scroll as u32;
         let mut y_offset: u16 = 0;
 
         for pd in &self.paragraphs {
@@ -526,12 +516,6 @@ impl ParagraphList {
             }
         }
 
-        let content_height: usize = self
-            .paragraphs
-            .iter()
-            .map(|p| Self::estimate_paragraph_height(p, width))
-            .sum();
-
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"))
@@ -541,7 +525,7 @@ impl ParagraphList {
             .track_style(Style::default().bg(theme.text))
             .thumb_style(Style::default().fg(theme.primary));
 
-        let mut scrollbar_state = ScrollbarState::new(content_height).position(self.scroll);
+        let mut scrollbar_state = ScrollbarState::new(content_height).position(scroll);
         scrollbar.render(area, buf, &mut scrollbar_state);
     }
 }

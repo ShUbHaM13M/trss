@@ -110,10 +110,6 @@ impl Theme {
         let reader = BufReader::new(file);
         let themes: HashMap<String, Theme> = serde_json::from_reader(reader)?;
 
-        for (key, theme) in &themes {
-            println!("{}: {:?}", key, theme);
-        }
-
         Ok(themes)
     }
 }

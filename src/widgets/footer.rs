@@ -29,12 +29,24 @@ lazy_static! {
             Screens::Home,
             vec![
                 KeyBinding {
-                    key: String::from("J/K"),
-                    label: String::from("Navigate"),
+                    key: String::from("j/k"),
+                    label: String::from("Move"),
+                },
+                KeyBinding {
+                    key: String::from("h/l"),
+                    label: String::from("Focus"),
+                },
+                KeyBinding {
+                    key: String::from("gg/G"),
+                    label: String::from("Top/End"),
                 },
                 KeyBinding {
                     key: String::from("Enter"),
-                    label: String::from("Read"),
+                    label: String::from("Open"),
+                },
+                KeyBinding {
+                    key: String::from("/"),
+                    label: String::from("Search"),
                 },
             ],
         );
@@ -42,12 +54,28 @@ lazy_static! {
             Screens::ViewFeed,
             vec![
                 KeyBinding {
-                    key: String::from("F1/f"),
-                    label: String::from("Favourite"),
+                    key: String::from("Esc"),
+                    label: String::from("Back"),
                 },
                 KeyBinding {
-                    key: String::from("r"),
-                    label: String::from("Reading list"),
+                    key: String::from("j/k"),
+                    label: String::from("Scroll"),
+                },
+                KeyBinding {
+                    key: String::from("PgUp/Dn"),
+                    label: String::from("Page"),
+                },
+                KeyBinding {
+                    key: String::from("g/G"),
+                    label: String::from("Top/End"),
+                },
+                KeyBinding {
+                    key: String::from("n/p"),
+                    label: String::from("Next/Prev"),
+                },
+                KeyBinding {
+                    key: String::from("f/r"),
+                    label: String::from("Fav/Save"),
                 },
             ],
         );

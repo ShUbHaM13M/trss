@@ -27,12 +27,8 @@ impl Settings {
         Ok(())
     }
 
-    pub async fn get_settings(database: &Database) -> Self {
-        let settings = Self {
-            theme: String::from("Dark"),
-            background_sync: false,
-        };
-        database
+    pub async fn get_settings(database: &Database) -> Result<Self, Box<dyn Error>> {
+        let settings = database
             .pool
             .conn(|conn| {
                 let mut stmt = conn.prepare("SELECT name, value FROM settings")?;
@@ -62,8 +58,8 @@ impl Settings {
 
                 Ok(settings)
             })
-            .await
-            .unwrap_or(settings)
+            .await?;
+        Ok(settings)
     }
 
     pub async fn update_setting(

@@ -12,7 +12,6 @@ enum FeedFields {
     Title,
     SubTitle,
     Url,
-    FeedCount,
 }
 
 #[derive(Debug, Clone)]
@@ -33,7 +32,7 @@ pub struct Feed {
 
 impl Feed {
     pub async fn get_all(database: &Database) -> Result<Vec<Self>, Box<dyn Error>> {
-        let mut feeds = database
+        let feeds = database
             .pool
             .conn(|conn| {
                 let mut stmt = conn.prepare(
