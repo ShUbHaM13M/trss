@@ -51,6 +51,34 @@ pub struct AppState {
     pub status_message: Option<String>,
 }
 
+impl AppState {
+    pub fn items_for_selected_source(&self) -> Vec<FeedItem> {
+        let mut items = match self.selected_source {
+            FeedSource::Feed(feed_id) => self
+                .feed_items
+                .get(&feed_id)
+                .map(|collection| collection.items.clone())
+                .unwrap_or_default(),
+            FeedSource::Favourites => self
+                .feed_items
+                .values()
+                .flat_map(|collection| collection.items.iter())
+                .filter(|item| self.favourites.contains(&item.id))
+                .cloned()
+                .collect(),
+            FeedSource::Readlist => self
+                .feed_items
+                .values()
+                .flat_map(|collection| collection.items.iter())
+                .filter(|item| self.readlist.contains(&item.id))
+                .cloned()
+                .collect(),
+        };
+        items.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
+        items
+    }
+}
+
 #[derive(Clone)]
 pub struct AppConfig {
     pub background_sync: bool,
@@ -77,11 +105,12 @@ pub struct Services {
 pub enum AppCommand {
     Quit,
     Navigate(Screens, Option<AppState>),
-    OpenFeed(usize),
+    OpenFeed(String),
     OpenAddFeedPopup,
     CloseAddFeedPopup,
     StartBackgroundSync,
     ToggleFeedItemFavourite(String),
+    ToggleFeedItemReadlist(String),
     // SelectFeed(usize),
     SelectSource(FeedSource),
     DeleteSelectedFeed,
@@ -146,6 +175,9 @@ impl App {
             Ok(favourites) => favourites,
             Err(_) => HashSet::new(),
         };
+        let readlist = FeedItem::get_readlist_ids(&database)
+            .await
+            .unwrap_or_default();
 
         let mut screens: HashMap<Screens, Box<dyn Screen>> = HashMap::new();
         screens.insert(
@@ -186,7 +218,7 @@ impl App {
                 background_syncing: false,
                 overlay: Overlay::None,
                 favourites,
-                readlist: HashSet::new(),
+                readlist,
                 status_message: None,
             },
             config: AppConfig {
@@ -243,45 +275,66 @@ impl App {
                     AppCommand::CloseAddFeedPopup => {
                         self.state.overlay = Overlay::None;
                     }
-                    AppCommand::OpenFeed(index) => {
-                        match self.state.selected_source {
-                            FeedSource::Favourites => {
-                                self.state.selected_feed_item_id =
-                                    self.state.favourites.iter().nth(index).cloned();
-                            }
-                            FeedSource::Readlist => {
-                                self.state.selected_feed_item_id =
-                                    self.state.readlist.iter().nth(index).cloned();
-                            }
-                            FeedSource::Feed(id) => {
-                                self.state.selected_feed_item_id = self
-                                    .state
-                                    .feed_items
-                                    .get(&id)
-                                    .and_then(|collection| collection.items.get(index))
-                                    .map(|item| item.id.clone());
-                            }
-                        }
+                    AppCommand::OpenFeed(feed_item_id) => {
+                        self.state.selected_feed_item_id = Some(feed_item_id);
                         if self.state.selected_feed_item_id.is_some() {
                             self.current_screen = Screens::ViewFeed;
                         }
                     }
                     AppCommand::ToggleFeedItemFavourite(feed_item_id) => {
-                        let is_favourite = FeedItem::toggle_favourite(
+                        match FeedItem::toggle_favourite(
                             feed_item_id.clone(),
-                            &self.services.database.clone(),
+                            &self.services.database,
                         )
-                        .await;
-                        if let Some(feed) = self.state.feeds.get(self.state.selected_feed_index) {
-                            if let Some(collection) = self.state.feed_items.get_mut(&feed.id) {
-                                if let Some(&index) = collection.index_map.get(&feed_item_id) {
-                                    collection.items[index].is_favourite = is_favourite;
-                                    if is_favourite {
-                                        self.state.favourites.insert(feed_item_id.clone());
-                                    } else {
-                                        self.state.favourites.remove(&feed_item_id);
+                        .await
+                        {
+                            Ok(is_favourite) => {
+                                for collection in self.state.feed_items.values_mut() {
+                                    if let Some(&index) = collection.index_map.get(&feed_item_id) {
+                                        collection.items[index].is_favourite = is_favourite;
                                     }
                                 }
+                                if is_favourite {
+                                    self.state.favourites.insert(feed_item_id);
+                                    self.state.status_message = Some("Added to favourites".into());
+                                } else {
+                                    self.state.favourites.remove(&feed_item_id);
+                                    self.state.status_message =
+                                        Some("Removed from favourites".into());
+                                }
+                            }
+                            Err(error) => {
+                                self.state.status_message =
+                                    Some(format!("Could not update favourite: {error}"));
+                            }
+                        }
+                    }
+                    AppCommand::ToggleFeedItemReadlist(feed_item_id) => {
+                        match FeedItem::toggle_readlist(
+                            feed_item_id.clone(),
+                            &self.services.database,
+                        )
+                        .await
+                        {
+                            Ok(in_readlist) => {
+                                for collection in self.state.feed_items.values_mut() {
+                                    if let Some(&index) = collection.index_map.get(&feed_item_id) {
+                                        collection.items[index].in_readlist = in_readlist;
+                                    }
+                                }
+                                if in_readlist {
+                                    self.state.readlist.insert(feed_item_id);
+                                    self.state.status_message =
+                                        Some("Added to reading list".into());
+                                } else {
+                                    self.state.readlist.remove(&feed_item_id);
+                                    self.state.status_message =
+                                        Some("Removed from reading list".into());
+                                }
+                            }
+                            Err(error) => {
+                                self.state.status_message =
+                                    Some(format!("Could not update reading list: {error}"));
                             }
                         }
                     }

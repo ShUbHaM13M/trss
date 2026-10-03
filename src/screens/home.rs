@@ -109,6 +109,33 @@ impl Home {
         }
     }
 
+    fn visible_items(&self, state: &crate::app::AppState) -> Vec<FeedItem> {
+        let mut items = if self.state.search_query.is_empty() {
+            state.items_for_selected_source()
+        } else {
+            let mut items = state
+                .feed_items
+                .values()
+                .flat_map(|collection| collection.items.iter().cloned())
+                .collect::<Vec<_>>();
+            items.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
+            items
+        };
+        if !self.state.search_query.is_empty() {
+            let query = self.state.search_query.to_lowercase();
+            items.retain(|item| {
+                item.title.to_lowercase().contains(&query)
+                    || item.summary.to_lowercase().contains(&query)
+                    || item.link.to_lowercase().contains(&query)
+                    || item
+                        .content
+                        .as_ref()
+                        .is_some_and(|content| content.to_lowercase().contains(&query))
+            });
+        }
+        items
+    }
+
     fn add_feed(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
         let title = self.state.new_feed_title.clone();
         let url = self.state.new_feed_url.clone();
@@ -157,62 +184,49 @@ impl Screen for Home {
 
         // Content
         {
-            let items: &Vec<FeedItem> = match ctx.state.selected_source {
-                FeedSource::Feed(feed_id) => {
-                    if let Some(collection) = ctx.state.feed_items.get(&feed_id) {
-                        &collection.items
-                    } else {
-                        &Vec::new()
-                    }
-                }
-                FeedSource::Favourites => {
-                    let mut favourites: Vec<FeedItem> = vec![];
-                    for collection in ctx.state.feed_items.values() {
-                        for item in &collection.items {
-                            if ctx.state.favourites.contains(&item.id) {
-                                favourites.push(item.clone());
-                            }
-                        }
-                    }
-                    &favourites.clone()
-                }
-                FeedSource::Readlist => {
-                    let mut readlist: Vec<FeedItem> = vec![];
-                    for collection in ctx.state.feed_items.values() {
-                        for item in &collection.items {
-                            if ctx.state.readlist.contains(&item.id) {
-                                readlist.push(item.clone());
-                            }
-                        }
-                    }
-                    &readlist.clone()
-                }
-            };
+            let items = self.visible_items(ctx.state);
 
             let feed_list_view = FeedListView {
                 focused: false,
-                title: match ctx.state.selected_source {
-                    FeedSource::Feed(_) => ctx
-                        .state
-                        .feeds
-                        .get(ctx.state.selected_feed_index)
-                        .map_or("No feeds yet", |feed| feed.title.as_str()),
-                    FeedSource::Favourites => "Favourites",
-                    FeedSource::Readlist => "Readlist",
+                title: if !self.state.search_query.is_empty() {
+                    "Search results"
+                } else {
+                    match ctx.state.selected_source {
+                        FeedSource::Feed(_) => ctx
+                            .state
+                            .feeds
+                            .get(ctx.state.selected_feed_index)
+                            .map_or("No feeds yet", |feed| feed.title.as_str()),
+                        FeedSource::Favourites => "Favourites",
+                        FeedSource::Readlist => "Readlist",
+                    }
                 },
-                subtitle: match ctx.state.selected_source {
-                    FeedSource::Feed(_) => ctx
-                        .state
-                        .feeds
-                        .get(ctx.state.selected_feed_index)
-                        .map_or("Press 'a' to add your first RSS feed", |feed| {
-                            feed.subtitle.as_str()
-                        }),
-                    FeedSource::Favourites => "All your favourite feeds",
-                    FeedSource::Readlist => "All your articles from readlist",
+                subtitle: if !self.state.search_query.is_empty() {
+                    "Matching articles across all feeds"
+                } else {
+                    match ctx.state.selected_source {
+                        FeedSource::Feed(_) => ctx
+                            .state
+                            .feeds
+                            .get(ctx.state.selected_feed_index)
+                            .map_or("Press 'a' to add your first RSS feed", |feed| {
+                                feed.subtitle.as_str()
+                            }),
+                        FeedSource::Favourites => "All your favourite articles",
+                        FeedSource::Readlist => "All your saved articles",
+                    }
+                },
+                empty_message: if !self.state.search_query.is_empty() {
+                    "No articles match this search"
+                } else {
+                    match ctx.state.selected_source {
+                        FeedSource::Feed(_) => "No articles in this feed",
+                        FeedSource::Favourites => "No favourite articles yet",
+                        FeedSource::Readlist => "Your reading list is empty",
+                    }
                 },
                 // current_feed: Some(feed.clone()),
-                feed_items: items,
+                feed_items: &items,
                 selected_feed_item_index: self.state.selected_feed_item_index,
                 theme: ctx.config.current_theme,
                 // subtitle: todo!(),
@@ -226,7 +240,14 @@ impl Screen for Home {
 
                 let sidebar_view = SidebarView {
                     items: self.state.filtered_feeds.clone(),
-                    selected_feed_index: ctx.state.selected_feed_index,
+                    selected_feed_index: match ctx.state.selected_source {
+                        FeedSource::Feed(feed_id) => self
+                            .state
+                            .filtered_feeds
+                            .iter()
+                            .position(|feed| feed.id == feed_id),
+                        _ => None,
+                    },
                     selected_navigation_index: match ctx.state.selected_source {
                         FeedSource::Feed(_) => 0,
                         FeedSource::Favourites => 1,
@@ -280,8 +301,18 @@ impl Screen for Home {
                             KeyCode::Char(c) => {
                                 self.state.search_query.push(c);
                             }
+                            KeyCode::Enter => {
+                                self.state.focused_widget = FocusedWidget::FeedItems;
+                            }
                             _ => {}
                         }
+                        self.state.selected_feed_item_index =
+                            if self.visible_items(ctx.state).is_empty() {
+                                None
+                            } else {
+                                Some(0)
+                            };
+                        self.filter_feeds(&ctx.state.feeds, &ctx.state.selected_source);
                         return;
                     } else if self.state.focused_widget == FocusedWidget::AddFeed {
                         match key.code {
@@ -343,8 +374,13 @@ impl Screen for Home {
                             }
                             FocusedWidget::FeedItems => {
                                 if let Some(feed_item_index) = self.state.selected_feed_item_index {
-                                    let _ =
-                                        ctx.command_tx.send(AppCommand::OpenFeed(feed_item_index));
+                                    if let Some(item) =
+                                        self.visible_items(ctx.state).get(feed_item_index)
+                                    {
+                                        let _ = ctx
+                                            .command_tx
+                                            .send(AppCommand::OpenFeed(item.id.clone()));
+                                    }
                                 }
                             }
                             _ => {}
@@ -410,31 +446,34 @@ impl Screen for Home {
                                 if self.state.filtered_feeds.is_empty() {
                                     return;
                                 }
-                                let feed_index = ctx.state.selected_feed_index.wrapping_add(1)
-                                    % self.state.filtered_feeds.len();
+                                let current_index = match ctx.state.selected_source {
+                                    FeedSource::Feed(feed_id) => self
+                                        .state
+                                        .filtered_feeds
+                                        .iter()
+                                        .position(|feed| feed.id == feed_id)
+                                        .unwrap_or(0),
+                                    _ => 0,
+                                };
+                                let feed_index =
+                                    (current_index + 1) % self.state.filtered_feeds.len();
                                 let feed_id = self.state.filtered_feeds[feed_index].id;
                                 let _ = ctx
                                     .command_tx
                                     .send(AppCommand::SelectSource(FeedSource::Feed(feed_id)));
                             }
                             FocusedWidget::FeedItems => {
-                                if ctx.state.feeds.is_empty() {
-                                    return;
-                                }
+                                let item_count = self.visible_items(ctx.state).len();
                                 self.state.selected_feed_item_index =
                                     match self.state.selected_feed_item_index {
                                         Some(index) => {
-                                            let feed =
-                                                &ctx.state.feeds[ctx.state.selected_feed_index];
-                                            let collection = &ctx.state.feed_items[&feed.id];
-                                            let item_count = collection.items.len();
                                             if item_count == 0 {
-                                                Some(0)
+                                                None
                                             } else {
                                                 Some(index.wrapping_add(1) % item_count)
                                             }
                                         }
-                                        _ => Some(0),
+                                        _ => (item_count > 0).then_some(0),
                                     };
                             }
                             FocusedWidget::Categories => {
@@ -466,29 +505,32 @@ impl Screen for Home {
                                 self.filter_feeds(&ctx.state.feeds, &ctx.state.selected_source);
                             }
                             FocusedWidget::FeedList => {
-                                let mut feed_index = ctx.state.selected_feed_index;
                                 if self.state.filtered_feeds.is_empty() {
                                     return;
                                 }
-                                if feed_index == 0 {
-                                    feed_index = self.state.filtered_feeds.len() - 1;
+                                let current_index = match ctx.state.selected_source {
+                                    FeedSource::Feed(feed_id) => self
+                                        .state
+                                        .filtered_feeds
+                                        .iter()
+                                        .position(|feed| feed.id == feed_id)
+                                        .unwrap_or(0),
+                                    _ => 0,
+                                };
+                                let feed_index = if current_index == 0 {
+                                    self.state.filtered_feeds.len() - 1
                                 } else {
-                                    feed_index -= 1;
-                                }
+                                    current_index - 1
+                                };
                                 let feed_id = self.state.filtered_feeds[feed_index].id;
                                 let _ = ctx
                                     .command_tx
                                     .send(AppCommand::SelectSource(FeedSource::Feed(feed_id)));
                             }
                             FocusedWidget::FeedItems => {
-                                if ctx.state.feeds.is_empty() {
-                                    return;
-                                }
-                                let feed = &ctx.state.feeds[ctx.state.selected_feed_index];
-                                let collection = &ctx.state.feed_items[&feed.id];
-                                let item_count = collection.items.len();
+                                let item_count = self.visible_items(ctx.state).len();
                                 if item_count == 0 {
-                                    self.state.selected_feed_item_index = Some(0);
+                                    self.state.selected_feed_item_index = None;
                                     return;
                                 }
                                 self.state.selected_feed_item_index =

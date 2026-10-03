@@ -16,6 +16,7 @@ pub struct FeedListView<'a> {
     // pub current_feed: Option<Feed>,
     pub title: &'a str,
     pub subtitle: &'a str,
+    pub empty_message: &'a str,
     pub feed_items: &'a Vec<FeedItem>,
     pub selected_feed_item_index: Option<usize>,
     pub theme: Theme,
@@ -59,7 +60,7 @@ impl<'a> WidgetRef for FeedList<'a> {
 
         if self.view.feed_items.is_empty() {
             let empty_message =
-                Paragraph::new("No feed items available").block(Block::new().title("Empty"));
+                Paragraph::new(self.view.empty_message).block(Block::new().title("Empty"));
             empty_message.render(content_area, buf);
         } else {
             let list = List::new(self.view.feed_items.iter().map(|item| {

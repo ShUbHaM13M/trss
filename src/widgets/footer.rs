@@ -40,10 +40,16 @@ lazy_static! {
         );
         m.insert(
             Screens::ViewFeed,
-            vec![KeyBinding {
-                key: String::from("F1"),
-                label: String::from("Add to Fav"),
-            }],
+            vec![
+                KeyBinding {
+                    key: String::from("F1/f"),
+                    label: String::from("Favourite"),
+                },
+                KeyBinding {
+                    key: String::from("r"),
+                    label: String::from("Reading list"),
+                },
+            ],
         );
         m
     };

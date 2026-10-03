@@ -178,6 +178,19 @@ impl FeedItem {
 
         Ok(feed_items)
     }
+
+    pub async fn get_readlist_ids(database: &Database) -> Result<HashSet<String>, Box<dyn Error>> {
+        let ids = database
+            .pool
+            .conn(|conn| {
+                let mut stmt = conn.prepare("SELECT feed_item_id FROM readlist")?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                rows.collect::<Result<HashSet<_>, _>>()
+            })
+            .await?;
+        Ok(ids)
+    }
+
     async fn get_read_list_items(database: &Database) -> Result<Vec<Self>, Box<dyn Error>> {
         let feed_items = database
             .pool
@@ -327,7 +340,10 @@ impl FeedItem {
         Ok(())
     }
 
-    pub async fn toggle_favourite(feed_item_id: String, database: &Database) -> bool {
+    pub async fn toggle_favourite(
+        feed_item_id: String,
+        database: &Database,
+    ) -> Result<bool, Box<dyn Error>> {
         const REMOVE_FAVOURITE: &str = r"
             DELETE FROM favourite_feeds
             WHERE feed_item_id = ?1;
@@ -349,12 +365,30 @@ impl FeedItem {
             })
             .await;
 
-        match result {
-            Ok(result) => result,
-            Err(err) => {
-                eprintln!("{}", err);
-                return false;
-            }
-        }
+        Ok(result?)
+    }
+
+    pub async fn toggle_readlist(
+        feed_item_id: String,
+        database: &Database,
+    ) -> Result<bool, Box<dyn Error>> {
+        let in_readlist = database
+            .pool
+            .conn(move |conn| {
+                let removed = conn.execute(
+                    "DELETE FROM readlist WHERE feed_item_id = ?1",
+                    [&feed_item_id],
+                )?;
+                if removed != 0 {
+                    return Ok(false);
+                }
+                conn.execute(
+                    "INSERT OR IGNORE INTO readlist (feed_item_id) VALUES (?1)",
+                    [&feed_item_id],
+                )?;
+                Ok(true)
+            })
+            .await?;
+        Ok(in_readlist)
     }
 }

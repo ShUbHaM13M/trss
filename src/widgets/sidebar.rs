@@ -21,7 +21,7 @@ pub struct NavigationItem {
 
 pub struct SidebarView {
     pub items: Vec<Feed>,
-    pub selected_feed_index: usize,
+    pub selected_feed_index: Option<usize>,
     pub selected_navigation_index: usize,
     pub feed_count: usize,
     pub favourite_count: usize,
@@ -128,7 +128,7 @@ impl<'a> Sidebar<'a> {
             .repeat_highlight_symbol(true)
             .direction(ListDirection::TopToBottom);
 
-        let mut state = ListState::default().with_selected(Some(self.view.selected_feed_index));
+        let mut state = ListState::default().with_selected(self.view.selected_feed_index);
         StatefulWidget::render(list, area, buf, &mut state);
     }
 }

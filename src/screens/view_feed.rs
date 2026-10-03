@@ -2,7 +2,6 @@ use ratatui::{
     crossterm::event::{KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Direction, Flex, Layout},
     style::{Style, Stylize},
-    text::Text,
     widgets::{Block, Padding, Paragraph, Widget, Wrap},
 };
 
@@ -115,10 +114,10 @@ impl Screen for ViewFeed {
                 .constraints([Constraint::Fill(1), Constraint::Fill(2)])
                 .areas(header_area);
 
-            let [title_area, favourite_area] = Layout::default()
+            let [title_area, flags_area] = Layout::default()
                 .direction(Direction::Horizontal)
                 .flex(Flex::SpaceBetween)
-                .constraints([Constraint::Fill(1), Constraint::Max(2)])
+                .constraints([Constraint::Fill(1), Constraint::Max(7)])
                 .areas(title_area);
 
             let title = Paragraph::new(selected_item.title.as_str())
@@ -129,15 +128,15 @@ impl Screen for ViewFeed {
                 .wrap(Wrap { trim: true })
                 .fg(theme.text);
 
-            let favourite = Paragraph::new(Text::from(if selected_item.is_favourite {
-                ""
-            } else {
-                ""
-            }))
+            let item_flags = Paragraph::new(format!(
+                "F{} R{}",
+                if selected_item.is_favourite { "+" } else { "-" },
+                if selected_item.in_readlist { "+" } else { "-" },
+            ))
             .fg(theme.primary);
 
             title.render(title_area, frame.buffer_mut());
-            favourite.render(favourite_area, frame.buffer_mut());
+            item_flags.render(flags_area, frame.buffer_mut());
             subtitle.render(subtitle_area, frame.buffer_mut());
 
             frame.render_widget(container, area);
@@ -175,9 +174,14 @@ impl Screen for ViewFeed {
                         }
                     }
                     KeyCode::F(1) | KeyCode::Char('f') => {
-                        let _ = ctx.command_tx.send(AppCommand::ToggleFeedItemFavourite(
-                            self.last_feed_id.clone().unwrap(),
-                        ));
+                        if let Some(id) = ctx.state.selected_feed_item_id.clone() {
+                            let _ = ctx.command_tx.send(AppCommand::ToggleFeedItemFavourite(id));
+                        }
+                    }
+                    KeyCode::Char('r') => {
+                        if let Some(id) = ctx.state.selected_feed_item_id.clone() {
+                            let _ = ctx.command_tx.send(AppCommand::ToggleFeedItemReadlist(id));
+                        }
                     }
                     _ => {}
                 };
