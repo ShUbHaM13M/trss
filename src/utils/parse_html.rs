@@ -460,8 +460,14 @@ impl ParagraphList {
         lines as u16
     }
 
-    fn block_vertical_extra(block: &Option<ratatui::widgets::Block<'static>>) -> u16 {
-        if block.is_some() { 2 } else { 0 }
+    fn block_inner_area(block: &Option<ratatui::widgets::Block<'static>>, width: u16) -> Rect {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height: u16::MAX,
+        };
+        block.as_ref().map_or(area, |block| block.inner(area))
     }
 
     pub fn render_ref(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
@@ -474,8 +480,9 @@ impl ParagraphList {
             .paragraphs
             .iter()
             .map(|paragraph| {
-                Self::measure_text_lines(&paragraph.text, width) as usize
-                    + Self::block_vertical_extra(&paragraph.block) as usize
+                let inner = Self::block_inner_area(&paragraph.block, width);
+                Self::measure_text_lines(&paragraph.text, inner.width) as usize
+                    + u16::MAX.saturating_sub(inner.height) as usize
             })
             .sum::<usize>();
         let max_scroll = content_height.saturating_sub(area.height as usize);
@@ -486,8 +493,9 @@ impl ParagraphList {
         let mut y_offset: u16 = 0;
 
         for pd in &self.paragraphs {
-            let text_lines = Self::measure_text_lines(&pd.text, width) as u32;
-            let extra = Self::block_vertical_extra(&pd.block) as u32;
+            let inner = Self::block_inner_area(&pd.block, width);
+            let text_lines = Self::measure_text_lines(&pd.text, inner.width) as u32;
+            let extra = u16::MAX.saturating_sub(inner.height) as u32;
             let par_lines = text_lines.saturating_add(extra);
 
             if lines_to_skip >= par_lines {
@@ -561,7 +569,13 @@ impl ParagraphList {
             .track_style(Style::default().bg(theme.text))
             .thumb_style(Style::default().fg(theme.primary));
 
-        let mut scrollbar_state = ScrollbarState::new(content_height).position(scroll);
+        // Ratatui's scrollbar position represents the last content line at the top
+        // when it reaches content_length - 1. Our scroll offset instead stops at
+        // content_height - viewport_height, so expose that scroll range as the
+        // scrollbar's content length to align both endpoints.
+        let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
+            .position(scroll)
+            .viewport_content_length(area.height as usize);
         scrollbar.render(area, buf, &mut scrollbar_state);
     }
 }
