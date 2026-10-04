@@ -309,7 +309,21 @@ fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData> {
                 }
                 "br" => vec![ParagraphData::new(Span::raw("\n"), None)],
                 "script" | "style" => vec![],
-                "pre" | "video" | "source" => {
+                "img" => media_link(tag, "Image", true)
+                    .map(|link| vec![ParagraphData::new(Span::raw(link), None)])
+                    .unwrap_or_default(),
+                "video" | "audio" | "source" | "iframe" | "embed" | "object" => {
+                    if let Some(link) = media_link(tag, tag_name, false) {
+                        vec![ParagraphData::new(Span::raw(link), None)]
+                    } else {
+                        let mut children_widgets = Vec::new();
+                        for child in tag.children().top().iter().filter_map(|h| h.get(parser)) {
+                            children_widgets.extend(parse_node(child, parser));
+                        }
+                        children_widgets
+                    }
+                }
+                "pre" | "picture" => {
                     let mut children_widgets = Vec::new();
                     for child in tag.children().top().iter().filter_map(|h| h.get(parser)) {
                         children_widgets.extend(parse_node(child, parser));
@@ -338,6 +352,28 @@ fn parse_node<'a>(node: &Node, parser: &Parser) -> Vec<ParagraphData> {
             vec![ParagraphData::new(span, None)]
         }
         _ => vec![],
+    }
+}
+
+fn media_link(tag: &tl::HTMLTag<'_>, label: &str, use_srcset: bool) -> Option<String> {
+    let attribute = |name: &str| {
+        tag.attributes()
+            .get(name)
+            .flatten()
+            .map(|value| value.as_utf8_str().to_string())
+            .filter(|value| !value.trim().is_empty())
+    };
+    let mut url = attribute("src").or_else(|| attribute("data-src"));
+    if url.is_none() && use_srcset {
+        url = attribute("srcset")
+            .and_then(|value| value.split(',').next().map(str::trim).map(str::to_string))
+            .and_then(|candidate| candidate.split_whitespace().next().map(str::to_string));
+    }
+    let url = url?;
+    if url.trim().is_empty() {
+        None
+    } else {
+        Some(format!("[{label}] {}", url.trim()))
     }
 }
 
