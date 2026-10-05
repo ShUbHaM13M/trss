@@ -51,6 +51,31 @@ trss/
 - **Enhanced User Interface**: Improve the visual design and layout of the TUI.
 - **Customizable Settings**: Allow users to customize settings such as feed refresh intervals and background sync.
 - **Theme Customization**: Enable users to choose from different color schemes or create their own.
+
+### User configuration
+
+`trss_config.json` in the working directory can define custom themes and keyboard
+bindings. Omitted themes and bindings use the built-in defaults. Key bindings are
+arrays of key names; modifier names can be combined, for example `Ctrl+d`.
+
+```json
+{
+  "themes": {},
+  "keymap": {
+    "home": { "down": ["j", "Down"], "quit": ["q", "Esc"] },
+    "article": { "back": ["Esc", "h"] }
+  }
+}
+```
+
+Available `home` actions: `quit`, `down`, `up`, `page_down`, `page_up`, `top`,
+`bottom`, `open`, `search`, `add_feed`, `refresh`, `delete_feed`, and
+`toggle_sidebar`. Available `article` actions: `back`, `down`, `up`, `page_down`,
+`page_up`, `top`, `bottom`, `next`, `previous`, `favourite`, and `readlist`.
+Key names include character keys, `Esc`, `Enter`, `Backspace`, `Tab`, `Up`,
+`Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Space`, and `F1`.
+If `trss_config.json` cannot be read, the app reports the error in the terminal
+and falls back to built-in defaults and `themes.json` when available.
 - **Feed Categories and tags**: Organize feeds into categories and apply tags for better organization.
 - **Customizable Keybindings**: Customize keyboard shortcuts for navigation and actions.
 

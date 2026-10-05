@@ -68,6 +68,7 @@
     }
   },
   "keymap": {
-    "home": {}
+    "home": {},
+    "article": {}
   }
 }

@@ -459,13 +459,45 @@ impl Screen for Home {
                     }
                     self.state.pending_g = key.code == KeyCode::Char('g');
 
-                    match key.code {
+                    let keymap = &ctx.config.keymap;
+                    let code = if keymap.matches("home", "quit", *key) {
+                        KeyCode::Esc
+                    } else if keymap.matches("home", "down", *key) {
+                        KeyCode::Down
+                    } else if keymap.matches("home", "up", *key) {
+                        KeyCode::Up
+                    } else if keymap.matches("home", "page_down", *key) {
+                        KeyCode::PageDown
+                    } else if keymap.matches("home", "page_up", *key) {
+                        KeyCode::PageUp
+                    } else if keymap.matches("home", "bottom", *key) {
+                        KeyCode::Char('G')
+                    } else if keymap.matches("home", "top", *key) {
+                        KeyCode::Home
+                    } else if keymap.matches("home", "open", *key) {
+                        KeyCode::Enter
+                    } else if keymap.matches("home", "search", *key) {
+                        KeyCode::Char('/')
+                    } else if keymap.matches("home", "add_feed", *key) {
+                        KeyCode::Char('a')
+                    } else if keymap.matches("home", "refresh", *key) {
+                        KeyCode::Char('r')
+                    } else if keymap.matches("home", "delete_feed", *key) {
+                        KeyCode::Char('d')
+                    } else if keymap.matches("home", "toggle_sidebar", *key) {
+                        KeyCode::Char('b')
+                    } else {
+                        key.code
+                    };
+
+                    match code {
                         KeyCode::Esc | KeyCode::Char('q') => {
                             let _ = ctx.command_tx.send(AppCommand::Quit);
                         }
                         KeyCode::Char('G') => {
                             self.move_selection_to_edge(ctx, true);
                         }
+                        KeyCode::Home => self.move_selection_to_edge(ctx, false),
                         KeyCode::Char('g') => {}
                         KeyCode::PageDown => self.move_selection_by(ctx, 10),
                         KeyCode::PageUp => self.move_selection_by(ctx, -10),

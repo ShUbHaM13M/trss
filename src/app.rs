@@ -1,6 +1,7 @@
 use crate::{
     event::Event,
     models::{
+        config::{Keymap, UserConfig},
         db::Database,
         feed::{Feed, FeedSource, spawn_update_feeds},
         feed_item::{FeedItem, FeedItemCollection},
@@ -88,6 +89,7 @@ pub struct AppConfig {
     pub current_theme: Theme,
     pub current_theme_name: String,
     themes: HashMap<String, Theme>,
+    pub keymap: Keymap,
 }
 
 impl AppConfig {
@@ -170,9 +172,27 @@ impl App {
         );
         screens.insert(Screens::ViewFeed, Box::new(ViewFeed::new()));
 
+        let user_config = match UserConfig::load() {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!(
+                    "Could not load trss_config.json ({error}); using defaults and themes.json if available."
+                );
+                UserConfig::default()
+            }
+        };
         let mut themes = Theme::get_all();
-        let user_themes = Theme::get_user_themes().unwrap_or_default();
-        themes.extend(user_themes);
+        if user_config.themes.is_empty() {
+            match Theme::get_user_themes() {
+                Ok(legacy_themes) => themes.extend(legacy_themes),
+                Err(error) if !error.to_string().contains("No such file") => {
+                    eprintln!("Could not load themes.json: {error}");
+                }
+                Err(_) => {}
+            }
+        } else {
+            themes.extend(user_config.themes);
+        }
 
         let user_settings = Settings::get_settings(&database).await?;
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -213,6 +233,7 @@ impl App {
                     .clone(),
                 current_theme_name: user_settings.theme,
                 themes,
+                keymap: user_config.keymap,
             },
 
             event_tx,

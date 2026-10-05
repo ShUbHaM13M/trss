@@ -1,5 +1,5 @@
 use ratatui::{
-    crossterm::event::{KeyCode, KeyEventKind},
+    crossterm::event::KeyEventKind,
     layout::{Constraint, Direction, Flex, Layout},
     style::{Style, Stylize},
     widgets::{Block, Padding, Paragraph, Widget, Wrap},
@@ -184,54 +184,38 @@ impl Screen for ViewFeed {
 
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                match key.code {
-                    KeyCode::Esc
-                    | KeyCode::Backspace
-                    | KeyCode::Left
-                    | KeyCode::Char('h')
-                    | KeyCode::Char('s') => {
-                        let _ = ctx
-                            .command_tx
-                            .send(AppCommand::Navigate(Screens::Home, None));
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        self.content_list.scroll_down();
-                    }
-                    KeyCode::PageDown | KeyCode::Char(' ') => {
-                        self.content_list.scroll_by(20);
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
+                let keymap = &ctx.config.keymap;
+                if keymap.matches("article", "back", *key) {
+                    let _ = ctx
+                        .command_tx
+                        .send(AppCommand::Navigate(Screens::Home, None));
+                } else if keymap.matches("article", "down", *key) {
+                    self.content_list.scroll_down();
+                } else if keymap.matches("article", "up", *key) {
+                    self.content_list.scroll_up();
+                } else if keymap.matches("article", "page_down", *key) {
+                    self.content_list.scroll_by(20);
+                } else if keymap.matches("article", "page_up", *key) {
+                    for _ in 0..20 {
                         self.content_list.scroll_up();
                     }
-                    KeyCode::PageUp => {
-                        for _ in 0..20 {
-                            self.content_list.scroll_up();
-                        }
+                } else if keymap.matches("article", "top", *key) {
+                    self.content_list.reset_scroll();
+                } else if keymap.matches("article", "bottom", *key) {
+                    self.content_list.scroll_bottom();
+                } else if keymap.matches("article", "next", *key) {
+                    Self::move_article(ctx.state, &ctx.command_tx, true);
+                } else if keymap.matches("article", "previous", *key) {
+                    Self::move_article(ctx.state, &ctx.command_tx, false);
+                } else if keymap.matches("article", "favourite", *key) {
+                    if let Some(id) = ctx.state.selected_feed_item_id.clone() {
+                        let _ = ctx.command_tx.send(AppCommand::ToggleFeedItemFavourite(id));
                     }
-                    KeyCode::Home | KeyCode::Char('g') => {
-                        self.content_list.reset_scroll();
+                } else if keymap.matches("article", "readlist", *key) {
+                    if let Some(id) = ctx.state.selected_feed_item_id.clone() {
+                        let _ = ctx.command_tx.send(AppCommand::ToggleFeedItemReadlist(id));
                     }
-                    KeyCode::End | KeyCode::Char('G') => {
-                        self.content_list.scroll_bottom();
-                    }
-                    KeyCode::Char('n') => {
-                        Self::move_article(ctx.state, &ctx.command_tx, true);
-                    }
-                    KeyCode::Char('p') => {
-                        Self::move_article(ctx.state, &ctx.command_tx, false);
-                    }
-                    KeyCode::F(1) | KeyCode::Char('f') => {
-                        if let Some(id) = ctx.state.selected_feed_item_id.clone() {
-                            let _ = ctx.command_tx.send(AppCommand::ToggleFeedItemFavourite(id));
-                        }
-                    }
-                    KeyCode::Char('r') => {
-                        if let Some(id) = ctx.state.selected_feed_item_id.clone() {
-                            let _ = ctx.command_tx.send(AppCommand::ToggleFeedItemReadlist(id));
-                        }
-                    }
-                    _ => {}
-                };
+                }
             }
             _ => {}
         }
