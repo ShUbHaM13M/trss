@@ -75,7 +75,7 @@ Available `home` actions: `quit`, `down`, `up`, `page_down`, `page_up`, `top`,
 Key names include character keys, `Esc`, `Enter`, `Backspace`, `Tab`, `Up`,
 `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Space`, and `F1`.
 If `trss_config.json` cannot be read, the app reports the error in the terminal
-and falls back to built-in defaults and `themes.json` when available.
+and falls back to built-in themes and key bindings.
 - **Feed Categories and tags**: Organize feeds into categories and apply tags for better organization.
 - **Customizable Keybindings**: Customize keyboard shortcuts for navigation and actions.
 

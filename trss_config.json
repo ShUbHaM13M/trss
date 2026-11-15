@@ -68,7 +68,33 @@
     }
   },
   "keymap": {
-    "home": {},
-    "article": {}
+    "home": {
+      "quit": ["q", "Esc"],
+      "down": ["j", "Down"],
+      "up": ["k", "Up"],
+      "page_down": ["PageDown", "Ctrl+d"],
+      "page_up": ["PageUp", "Ctrl+u"],
+      "top": ["Home"],
+      "bottom": ["G"],
+      "open": ["Enter"],
+      "search": ["/"],
+      "add_feed": ["a"],
+      "refresh": ["r"],
+      "delete_feed": ["d"],
+      "toggle_sidebar": ["Ctrl+b"]
+    },
+    "article": {
+      "back": ["Esc", "Backspace", "Left", "h", "s"],
+      "down": ["j", "Down"],
+      "up": ["k", "Up"],
+      "page_down": ["PageDown", "Space"],
+      "page_up": ["PageUp"],
+      "top": ["Home", "g"],
+      "bottom": ["End", "G"],
+      "next": ["n"],
+      "previous": ["p"],
+      "favourite": ["F1", "f"],
+      "readlist": ["r"]
+    }
   }
 }

@@ -1,11 +1,9 @@
-use std::{collections::HashMap, error::Error, fs::File, io::BufReader};
+use std::{collections::HashMap, error::Error};
 
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
 use crate::models::db::Database;
-
-const USER_THEMES_FILE: &str = "themes.json";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Theme {
@@ -103,13 +101,5 @@ impl Theme {
         themes.insert(String::from("Light"), LIGHT_THEME);
         themes.insert(String::from("Dark"), DARK_THEME);
         themes
-    }
-
-    pub fn get_user_themes() -> Result<HashMap<String, Self>, Box<dyn Error>> {
-        let file = File::open(USER_THEMES_FILE)?;
-        let reader = BufReader::new(file);
-        let themes: HashMap<String, Theme> = serde_json::from_reader(reader)?;
-
-        Ok(themes)
     }
 }
