@@ -3,6 +3,10 @@ name = "trss-rs"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "trss"
+path = "src/main.rs"
+
 [dependencies]
 async-sqlite = "0.5.2"
 chrono = "0.4.41"
