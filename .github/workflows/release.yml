@@ -84,15 +84,22 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+      actions: read
+
     steps:
       - name: Download release archives
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      - name: List release files
+        run: ls -lah dist/
+
       - name: Publish release
-        uses: softprops/action-gh-release@v4
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
